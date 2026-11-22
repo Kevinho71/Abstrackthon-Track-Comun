@@ -1,43 +1,46 @@
 import logging
+from contextlib import asynccontextmanager
 
-from telegram.ext import (
-    ApplicationBuilder,
-    CallbackQueryHandler,
-    CommandHandler,
-    MessageHandler,
-    filters,
-)
+from fastapi import FastAPI
 
-from app import config, handlers
-from app.db import Database
-from app.reminders import check_reminders
+from app import config
+from app.channels import webhook
+from app.db import init_db, make_engine, make_session_factory
 
 
-def main() -> None:
+def create_app(database_url: str | None = None, validate: bool = True) -> FastAPI:
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        if validate:
+            config.validate()
+        engine = make_engine(database_url or config.DATABASE_URL)
+        init_db(engine)
+        app.state.engine = engine
+        app.state.session_factory = make_session_factory(engine)
+        yield
+        engine.dispose()
+
+    app = FastAPI(title="Agente de seguimiento de chats", lifespan=lifespan)
+    app.include_router(webhook.router)
+
+    @app.get("/health")
+    def health():
+        return {"ok": True}
+
+    return app
+
+
+def app_factory() -> FastAPI:
     logging.basicConfig(
         format="%(asctime)s %(levelname)s %(name)s: %(message)s", level=logging.INFO
     )
-    logging.getLogger("httpx").setLevel(logging.WARNING)  # evita registrar el token en las URLs
-    config.validate()
-
-    application = ApplicationBuilder().token(config.TELEGRAM_BOT_TOKEN).build()
-    application.bot_data["db"] = Database(config.DB_PATH)
-
-    application.add_handler(CommandHandler(["start", "ayuda"], handlers.start))
-    application.add_handler(CommandHandler("nombre", handlers.nombre))
-    application.add_handler(CommandHandler("pendientes", handlers.pendientes))
-    application.add_handler(CommandHandler("resumen", handlers.resumen))
-    application.add_handler(CommandHandler("hecho", handlers.hecho))
-    application.add_handler(MessageHandler(filters.Document.ALL, handlers.on_document))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handlers.on_text))
-    application.add_handler(CallbackQueryHandler(handlers.on_button))
-
-    application.job_queue.run_repeating(
-        check_reminders, interval=config.REMINDER_INTERVAL_MIN * 60, first=30
-    )
-    logging.getLogger(__name__).info("Bot iniciado")
-    application.run_polling(drop_pending_updates=True)
+    logging.getLogger("httpx").setLevel(logging.WARNING)  # evita registrar claves en las URLs
+    return create_app()
 
 
 if __name__ == "__main__":
-    main()
+    import os
+
+    import uvicorn
+
+    uvicorn.run(app_factory(), host="0.0.0.0", port=int(os.getenv("PORT", "8000")))

@@ -1,171 +1,176 @@
-import os
-import sqlite3
+"""Modelos y sesión de SQLAlchemy. Las fechas se guardan en UTC."""
 from contextlib import contextmanager
-from datetime import datetime, timedelta, timezone
-from typing import Optional
+from datetime import datetime, timezone
+from typing import Iterator, Optional
+
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    create_engine,
+)
+from sqlalchemy.engine import Engine
+from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship, sessionmaker
+from sqlalchemy.types import TypeDecorator
 
 STATUSES = ("vendida", "cita_agendada", "pendiente_seguimiento", "resuelta", "perdida")
 CLOSED_STATUSES = ("vendida", "resuelta", "perdida")
-
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS agents (
-    telegram_id INTEGER PRIMARY KEY,
-    name TEXT,
-    wa_name TEXT,
-    created_at TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS chats (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    agent_id INTEGER NOT NULL,
-    customer TEXT,
-    summary TEXT,
-    status TEXT NOT NULL,
-    next_action TEXT,
-    amount REAL,
-    follow_up_at TEXT,
-    unanswered INTEGER NOT NULL DEFAULT 0,
-    done INTEGER NOT NULL DEFAULT 0,
-    last_reminded_at TEXT,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_chats_agent ON chats(agent_id, done);
-"""
+CONNECTION_STATES = ("creating", "qr", "connecting", "open", "closed")
 
 
 def now_utc() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def iso(dt: datetime) -> str:
-    return dt.astimezone(timezone.utc).isoformat(timespec="seconds")
+class UTCDateTime(TypeDecorator):
+    """Guarda siempre en UTC y devuelve fechas con zona horaria, también en SQLite."""
+
+    impl = DateTime(timezone=True)
+    cache_ok = True
+
+    def process_bind_param(self, value, dialect):
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
+
+    def process_result_value(self, value, dialect):
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
 
 
-class Database:
-    def __init__(self, path: str):
-        self.path = path
-        folder = os.path.dirname(os.path.abspath(path))
-        os.makedirs(folder, exist_ok=True)
-        with self._conn() as c:
-            c.executescript(SCHEMA)
+class Base(DeclarativeBase):
+    pass
 
-    @contextmanager
-    def _conn(self):
-        conn = sqlite3.connect(self.path)
-        conn.row_factory = sqlite3.Row
-        try:
-            yield conn
-            conn.commit()
-        finally:
-            conn.close()
 
-    # --- agentes ---
-    def upsert_agent(self, telegram_id: int, name: str) -> None:
-        with self._conn() as c:
-            c.execute(
-                "INSERT INTO agents(telegram_id, name, created_at) VALUES(?,?,?) "
-                "ON CONFLICT(telegram_id) DO UPDATE SET name=excluded.name",
-                (telegram_id, name, iso(now_utc())),
-            )
+class Account(Base):
+    __tablename__ = "accounts"
 
-    def set_wa_name(self, telegram_id: int, wa_name: str) -> None:
-        with self._conn() as c:
-            c.execute("UPDATE agents SET wa_name=? WHERE telegram_id=?", (wa_name, telegram_id))
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    email: Mapped[str] = mapped_column(String(255), unique=True)
+    password_hash: Mapped[str] = mapped_column(String(255))
+    name: Mapped[Optional[str]] = mapped_column(String(255))
+    telegram_id: Mapped[Optional[int]] = mapped_column(Integer, unique=True)
+    link_token: Mapped[Optional[str]] = mapped_column(String(64), unique=True)
+    tz: Mapped[Optional[str]] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=now_utc)
 
-    def get_agent(self, telegram_id: int) -> Optional[sqlite3.Row]:
-        with self._conn() as c:
-            return c.execute("SELECT * FROM agents WHERE telegram_id=?", (telegram_id,)).fetchone()
+    connections: Mapped[list["Connection"]] = relationship(back_populates="account")
 
-    # --- chats ---
-    def add_chat(
-        self,
-        agent_id: int,
-        customer: str,
-        summary: str,
-        status: str,
-        next_action: Optional[str],
-        amount: Optional[float],
-        follow_up_at: Optional[datetime],
-        unanswered: bool,
-    ) -> int:
-        done = status in CLOSED_STATUSES and not unanswered
-        ts = iso(now_utc())
-        with self._conn() as c:
-            cur = c.execute(
-                "INSERT INTO chats(agent_id, customer, summary, status, next_action, amount, "
-                "follow_up_at, unanswered, done, created_at, updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-                (
-                    agent_id, customer, summary, status, next_action, amount,
-                    iso(follow_up_at) if follow_up_at else None,
-                    int(unanswered), int(done), ts, ts,
-                ),
-            )
-            return cur.lastrowid
 
-    def get_chat(self, chat_id: int, agent_id: int) -> Optional[sqlite3.Row]:
-        with self._conn() as c:
-            return c.execute(
-                "SELECT * FROM chats WHERE id=? AND agent_id=?", (chat_id, agent_id)
-            ).fetchone()
+class Connection(Base):
+    __tablename__ = "connections"
 
-    def set_status(self, chat_id: int, agent_id: int, status: str) -> bool:
-        done = int(status in CLOSED_STATUSES)
-        with self._conn() as c:
-            cur = c.execute(
-                "UPDATE chats SET status=?, done=?, unanswered=CASE WHEN ?=1 THEN 0 ELSE unanswered END, "
-                "updated_at=? WHERE id=? AND agent_id=?",
-                (status, done, done, iso(now_utc()), chat_id, agent_id),
-            )
-            return cur.rowcount > 0
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), index=True)
+    instance_name: Mapped[str] = mapped_column(String(100), unique=True)
+    phone: Mapped[Optional[str]] = mapped_column(String(32))
+    state: Mapped[str] = mapped_column(String(16), default="creating")
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=now_utc)
+    connected_at: Mapped[Optional[datetime]] = mapped_column(UTCDateTime)
 
-    def mark_done(self, chat_id: int, agent_id: int) -> bool:
-        with self._conn() as c:
-            cur = c.execute(
-                "UPDATE chats SET done=1, unanswered=0, updated_at=? WHERE id=? AND agent_id=?",
-                (iso(now_utc()), chat_id, agent_id),
-            )
-            return cur.rowcount > 0
+    account: Mapped[Account] = relationship(back_populates="connections")
+    conversations: Mapped[list["Conversation"]] = relationship(back_populates="connection")
 
-    def snooze(self, chat_id: int, agent_id: int, minutes: int) -> bool:
-        when = iso(now_utc() + timedelta(minutes=minutes))
-        with self._conn() as c:
-            cur = c.execute(
-                "UPDATE chats SET follow_up_at=?, unanswered=0, updated_at=? WHERE id=? AND agent_id=?",
-                (when, iso(now_utc()), chat_id, agent_id),
-            )
-            return cur.rowcount > 0
 
-    def pending(self, agent_id: int, limit: int = 20) -> list[sqlite3.Row]:
-        with self._conn() as c:
-            return c.execute(
-                "SELECT * FROM chats WHERE agent_id=? AND done=0 "
-                "ORDER BY unanswered DESC, COALESCE(follow_up_at, '9999') ASC LIMIT ?",
-                (agent_id, limit),
-            ).fetchall()
+class Conversation(Base):
+    __tablename__ = "conversations"
+    __table_args__ = (UniqueConstraint("connection_id", "remote_jid"),)
 
-    def stats(self, agent_id: int) -> dict[str, int]:
-        with self._conn() as c:
-            rows = c.execute(
-                "SELECT status, COUNT(*) n FROM chats WHERE agent_id=? GROUP BY status", (agent_id,)
-            ).fetchall()
-            unanswered = c.execute(
-                "SELECT COUNT(*) FROM chats WHERE agent_id=? AND done=0 AND unanswered=1", (agent_id,)
-            ).fetchone()[0]
-        out = {r["status"]: r["n"] for r in rows}
-        out["_sin_responder"] = unanswered
-        return out
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    connection_id: Mapped[int] = mapped_column(ForeignKey("connections.id"), index=True)
+    remote_jid: Mapped[str] = mapped_column(String(128))
+    customer_name: Mapped[Optional[str]] = mapped_column(String(255))
+    summary: Mapped[Optional[str]] = mapped_column(Text)
+    suggested_status: Mapped[Optional[str]] = mapped_column(String(32))
+    status: Mapped[Optional[str]] = mapped_column(String(32))
+    next_action: Mapped[Optional[str]] = mapped_column(Text)
+    amount: Mapped[Optional[float]] = mapped_column(Float)
+    follow_up_at: Mapped[Optional[datetime]] = mapped_column(UTCDateTime)
+    unanswered: Mapped[bool] = mapped_column(Boolean, default=False)
+    done: Mapped[bool] = mapped_column(Boolean, default=False)
+    last_message_at: Mapped[Optional[datetime]] = mapped_column(UTCDateTime)
+    last_analyzed_at: Mapped[Optional[datetime]] = mapped_column(UTCDateTime)
+    last_reminded_at: Mapped[Optional[datetime]] = mapped_column(UTCDateTime)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=now_utc)
 
-    # --- recordatorios ---
-    def due_reminders(self, cooldown_min: int) -> list[sqlite3.Row]:
-        now = now_utc()
-        with self._conn() as c:
-            return c.execute(
-                "SELECT * FROM chats WHERE done=0 AND "
-                "(unanswered=1 OR (follow_up_at IS NOT NULL AND follow_up_at<=?)) AND "
-                "(last_reminded_at IS NULL OR last_reminded_at<=?)",
-                (iso(now), iso(now - timedelta(minutes=cooldown_min))),
-            ).fetchall()
+    connection: Mapped[Connection] = relationship(back_populates="conversations")
+    messages: Mapped[list["Message"]] = relationship(
+        back_populates="conversation", order_by="Message.sent_at"
+    )
 
-    def mark_reminded(self, chat_id: int) -> None:
-        with self._conn() as c:
-            c.execute("UPDATE chats SET last_reminded_at=? WHERE id=?", (iso(now_utc()), chat_id))
+
+class Message(Base):
+    __tablename__ = "messages"
+    __table_args__ = (UniqueConstraint("conversation_id", "wa_message_id"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    conversation_id: Mapped[int] = mapped_column(ForeignKey("conversations.id"), index=True)
+    wa_message_id: Mapped[str] = mapped_column(String(128))
+    direction: Mapped[str] = mapped_column(String(3))  # "in" (cliente) u "out" (el negocio)
+    text: Mapped[str] = mapped_column(Text)
+    type: Mapped[str] = mapped_column(String(32), default="text")
+    sent_at: Mapped[datetime] = mapped_column(UTCDateTime)
+
+    conversation: Mapped[Conversation] = relationship(back_populates="messages")
+
+
+class Correction(Base):
+    __tablename__ = "corrections"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    conversation_id: Mapped[int] = mapped_column(ForeignKey("conversations.id"), index=True)
+    suggested_status: Mapped[Optional[str]] = mapped_column(String(32))
+    final_status: Mapped[str] = mapped_column(String(32))
+    at: Mapped[datetime] = mapped_column(UTCDateTime, default=now_utc)
+
+
+def normalize_url(url: str) -> str:
+    """Railway entrega postgresql://; SQLAlchemy necesita indicar el driver psycopg 3."""
+    if url.startswith("postgres://"):
+        url = "postgresql://" + url[len("postgres://"):]
+    if url.startswith("postgresql://"):
+        url = "postgresql+psycopg://" + url[len("postgresql://"):]
+    return url
+
+
+def make_engine(url: str) -> Engine:
+    url = normalize_url(url)
+    if url.startswith("sqlite"):
+        import os
+
+        path = url.split("///", 1)[-1]
+        if path and path != ":memory:":
+            os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+        return create_engine(url, connect_args={"check_same_thread": False})
+    return create_engine(url, pool_pre_ping=True)
+
+
+def init_db(engine: Engine) -> None:
+    Base.metadata.create_all(engine)
+
+
+def make_session_factory(engine: Engine) -> sessionmaker[Session]:
+    return sessionmaker(engine, expire_on_commit=False)
+
+
+@contextmanager
+def session_scope(factory: sessionmaker[Session]) -> Iterator[Session]:
+    session = factory()
+    try:
+        yield session
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
