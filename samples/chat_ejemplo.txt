@@ -1,0 +1,8 @@
+12/11/2026, 10:02 - Los mensajes y las llamadas están cifrados de extremo a extremo.
+12/11/2026, 10:03 - Marta Ruiz: Hola, buenos días. Vi su anuncio del plan Pro, ¿cuánto cuesta?
+12/11/2026, 10:04 - Laura (Ventas): Buen día Marta, el plan Pro cuesta 49 USD al mes e incluye 5 usuarios.
+12/11/2026, 10:06 - Marta Ruiz: Me interesa. ¿Tienen descuento por pago anual?
+12/11/2026, 10:07 - Laura (Ventas): Sí, pagando el año completo hay 15% de descuento: 499,80 USD.
+12/11/2026, 10:15 - Marta Ruiz: Perfecto, lo consulto con mi socio y le confirmo mañana por la tarde.
+12/11/2026, 10:16 - Laura (Ventas): Claro, quedo atenta mañana. Cualquier duda me escribe.
+13/11/2026, 16:40 - Marta Ruiz: Hola Laura, hablé con mi socio. ¿Pueden hacer una demo el lunes?
