@@ -132,15 +132,21 @@ Las fechas se guardan en UTC.
 - [x] Modelo de respaldo (`GEMINI_FALLBACK_MODEL`) ante errores 503 y 429, y reintento a los 15 minutos si un análisis falla.
 - [x] Evaluación con 30 conversaciones sintéticas (`samples/eval_chats.json`, `python -m app.eval`).
 - [ ] Medir las 30 conversaciones completas. En la primera corrida, Gemini respondió 16 de 30 y acertó las 16; las otras 14 fallaron con 503 («alta demanda»).
-- [ ] Botón «Analizar ahora» (pasa a la Fase 4, junto con la vista de la conversación).
+- [x] Análisis manual: «Analizar ahora» en el detalle de cada chat y en el tablero (hasta 8 chats por pulsación, sin esperar el silencio).
 
 **Listo cuando:** el estado coincide en al menos el 85 % de los casos y no hay JSON inválido.
 
 ### Fase 4. Web
-- [ ] Tablero por estado.
-- [ ] Bandeja de sugerencias por confirmar: aceptar o cambiar el estado, guardado en `corrections`.
-- [ ] Lista «Hoy» con seguimientos vencidos y clientes esperando respuesta.
-- [ ] Vista de la conversación con el resumen y los mensajes.
+- [x] Tablero kanban en modo claro (`/`): columnas Sin clasificar, Pendiente, Cita agendada, Vendida, Resuelta y Perdida. Cada tarjeta muestra el último mensaje como burbuja, el resumen de la IA, el tiempo de espera, el seguimiento y el monto (`app/core/board.py`, `app/web/templates/`, `app/web/static/`).
+- [x] Franja de resumen por estado (con la suma de ventas) y una línea con lo que más urgente: «3 clientes esperan respuesta · 2 seguimientos vencidos».
+- [x] Sugerencias por confirmar: la tarjeta muestra «IA sugiere …» con un botón «Confirmar»; la persona también puede arrastrarla a otra columna o elegir el estado en el detalle. Cada cambio se guarda en `corrections`.
+- [x] Detalle de la conversación en un panel lateral: estado, resumen, siguiente acción, seguimiento, monto y los mensajes. Incluye «Analizar ahora».
+- [x] Actualización automática cada 30 segundos y botón «Actualizar». Números conectados en `/numbers`.
+- [x] «Ir al chat» en cada tarjeta y en el detalle: abre la conversación en WhatsApp con `https://wa.me/<número>` en una pestaña nueva. Los contactos sin número visible (`@lid`) no tienen enlace.
+- [x] Diseño con el estilo «hoja enmarcada» del skill de diseño: marco verde-grisáceo, hoja blanca, sin modo oscuro. Inspector: 0 fallos y 0 avisos a 1440, 768 y 390.
+- [x] Datos de demostración solo para desarrollo local: `python scripts/seed_demo.py` (cuenta `demo@demo.local`).
+- [ ] Probar el tablero con conversaciones reales (tras desplegar y recibir mensajes).
+- [ ] La lista «Hoy» queda cubierta por la línea de urgencias y las marcas de las tarjetas; una vista aparte se decide tras el piloto.
 
 **Listo cuando:** una persona confirma 5 conversaciones y las ve en su tablero.
 
