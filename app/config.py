@@ -42,6 +42,7 @@ def validate() -> None:
             ("EVOLUTION_URL", EVOLUTION_URL),
             ("EVOLUTION_API_KEY", EVOLUTION_API_KEY),
             ("WEBHOOK_TOKEN", WEBHOOK_TOKEN),
+            ("SESSION_SECRET", SESSION_SECRET),
         )
         if not v
     ]

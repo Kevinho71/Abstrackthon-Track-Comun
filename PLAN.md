@@ -114,10 +114,14 @@ Las fechas se guardan en UTC.
 **Listo cuando:** un payload `messages.upsert` repetido deja una sola fila en `messages` y la conversación queda actualizada.
 
 ### Fase 2. Cuentas y registro del número
-- [ ] Registro e inicio de sesión (contraseña con hash, sesión por cookie).
-- [ ] Pantalla «Conectar WhatsApp»: número, QR y código de emparejamiento, estados claros (generando, esperando escaneo, conectado, error) y botón «reintentar».
-- [ ] Reconexión cuando llega `connection.update` con `close`.
-- [ ] Aviso en el registro de que la conexión no es oficial y de que conviene empezar con un número secundario.
+- [x] Registro e inicio de sesión: contraseña con scrypt, sesión por cookie firmada, correo sin distinguir mayúsculas (`app/web/auth.py`, `app/web/routes.py`).
+- [x] Pantalla «Conectar WhatsApp»: número, QR y código de emparejamiento, estados (preparando, esperando escaneo, conectando, conectado, desconectado) y botón «Generar uno nuevo» que reutiliza la instancia (`app/core/connections.py`, `app/web/templates/`).
+- [x] La página se actualiza sola: consulta el estado cada 3 s y renueva el QR cada 25 s. Si Evolution perdió la instancia, se vuelve a crear con el mismo nombre.
+- [x] «Desconectar» borra la instancia y conserva los mensajes guardados. «Reconectar» desde el panel vuelve a mostrar el código.
+- [x] Aviso en el formulario de que la conexión no es oficial, de que solo se leen los chats y de que conviene empezar con un número secundario.
+- [x] Límite de 5 números por cuenta y aislamiento entre cuentas (otra cuenta recibe 404).
+- [x] Probado de punta a punta contra Evolution real en Docker y en un navegador, sin errores de consola.
+- [ ] Vincular un teléfono real con el código y ver llegar sus mensajes (requiere un número real).
 
 **Listo cuando:** una persona registra su número desde la web y sus mensajes aparecen en la base de datos.
 
