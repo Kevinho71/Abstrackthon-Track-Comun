@@ -1,0 +1,45 @@
+<div id="board-data" data-finding="{{ board.finding }}" hidden></div>
+{% if board.total == 0 %}
+<div class="empty-state">
+  {% if has_numbers %}
+  <strong>Todavía no hay conversaciones.</strong>
+  <p>Cuando alguien escriba o le respondas desde tu WhatsApp, su chat aparecerá aquí y se clasificará solo tras unos minutos de silencio.</p>
+  <a class="btn secondary" href="/numbers">Ver mis números</a>
+  {% else %}
+  <strong>Conecta tu primer número.</strong>
+  <p>Vincúlalo con un código, igual que «Dispositivos vinculados» en WhatsApp. Sigues usando WhatsApp en tu teléfono sin cambios.</p>
+  <a class="btn" href="/connections/new">Conectar WhatsApp</a>
+  {% endif %}
+</div>
+{% else %}
+<nav class="strip" aria-label="Resumen por estado">
+  {% for col in board.columns %}
+  <a href="#lane-{{ col.key }}" data-status="{{ col.key }}" data-jump="{{ col.key }}">
+    <span class="k"><span class="dot{{ ' hollow' if col.key == 'sin_clasificar' }}"></span>{{ col.label }}</span>
+    <span class="v">{{ col.total }}</span>
+    <span class="s">
+      {%- if col.key == "vendida" and board.sales_text %}{{ board.sales_text }}
+      {%- elif col.key == "pendiente_seguimiento" %}{% set w = col.cards | selectattr("unanswered") | list | length %}{% if w %}{{ w }} {{ 'espera respuesta' if w == 1 else 'esperan respuesta' }}{% endif %}
+      {%- endif -%}
+    </span>
+  </a>
+  {% endfor %}
+</nav>
+
+<div class="board" id="board">
+  {% for col in board.columns %}
+  <section class="lane" id="lane-{{ col.key }}" data-status="{{ col.key }}" aria-label="{{ col.label }}">
+    <header class="lane-head" title="{{ col.hint }}">
+      <span class="dot{{ ' hollow' if col.key == 'sin_clasificar' }}"></span>
+      <h2>{{ col.label }}</h2>
+      <span class="n">{{ col.total }}</span>
+    </header>
+    <div class="lane-body">
+      {% for c in col.cards %}{% include "_card.html" %}{% endfor %}
+      {% if not col.cards %}<p class="lane-empty">{{ "Nada por aquí" if col.key != "sin_clasificar" else "Los chats nuevos entran aquí y se clasifican tras " ~ SILENCE_MINUTES ~ " min sin mensajes" }}</p>{% endif %}
+      {% if col.hidden %}<p class="lane-more">y {{ col.hidden }} más</p>{% endif %}
+    </div>
+  </section>
+  {% endfor %}
+</div>
+{% endif %}
