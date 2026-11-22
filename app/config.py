@@ -21,6 +21,8 @@ SESSION_SECRET = os.getenv("SESSION_SECRET", "")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
+# Modelo al que se recurre si el principal está saturado (503) o limitado (429). Vacío = sin respaldo.
+GEMINI_FALLBACK_MODEL = os.getenv("GEMINI_FALLBACK_MODEL", "gemini-2.5-flash-lite")
 
 TZ_NAME = os.getenv("TZ", "UTC")
 SILENCE_MINUTES = int(os.getenv("SILENCE_MINUTES", "10"))

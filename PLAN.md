@@ -126,11 +126,13 @@ Las fechas se guardan en UTC.
 **Listo cuando:** una persona registra su número desde la web y sus mensajes aparecen en la base de datos.
 
 ### Fase 3. Análisis con Gemini
-- [ ] Tarea cada minuto: conversaciones con 10 minutos de silencio y mensajes nuevos desde el último análisis.
-- [ ] `llm.analyze` sobre la conversación completa (recortando el inicio si es larga) y guardado en `suggested_status`, resumen, acción y fecha.
-- [ ] Regla determinista: si el último mensaje es del negocio, `unanswered = false`.
-- [ ] Botón «Analizar ahora».
-- [ ] **Evaluación:** 30 conversaciones anonimizadas con el estado esperado anotado a mano.
+- [x] Tarea cada minuto: conversaciones con 10 minutos de silencio y mensajes nuevos desde el último análisis, hasta 10 por ciclo (`app/core/analysis.py`).
+- [x] `llm.analyze` sobre la conversación completa (recortando el inicio si es larga) y guardado en `suggested_status`, resumen, acción, monto y fecha. La persona confirma después (`status`).
+- [x] Regla determinista: solo hay pregunta sin responder si el último mensaje es del cliente.
+- [x] Modelo de respaldo (`GEMINI_FALLBACK_MODEL`) ante errores 503 y 429, y reintento a los 15 minutos si un análisis falla.
+- [x] Evaluación con 30 conversaciones sintéticas (`samples/eval_chats.json`, `python -m app.eval`).
+- [ ] Medir las 30 conversaciones completas. En la primera corrida, Gemini respondió 16 de 30 y acertó las 16; las otras 14 fallaron con 503 («alta demanda»).
+- [ ] Botón «Analizar ahora» (pasa a la Fase 4, junto con la vista de la conversación).
 
 **Listo cuando:** el estado coincide en al menos el 85 % de los casos y no hay JSON inválido.
 

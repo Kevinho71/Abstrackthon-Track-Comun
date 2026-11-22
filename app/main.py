@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -8,6 +9,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from app import config
 from app.channels import webhook
 from app.channels.evolution import EvolutionClient
+from app.core import analysis
 from app.db import init_db, make_engine, make_session_factory
 from app.web import routes
 
@@ -18,6 +20,7 @@ def create_app(
     database_url: str | None = None,
     validate: bool = True,
     evolution: EvolutionClient | None = None,
+    run_analysis: bool = True,
 ) -> FastAPI:
     """`evolution` permite inyectar un cliente falso en las pruebas."""
 
@@ -33,7 +36,15 @@ def create_app(
         app.state.evolution = evolution or (
             EvolutionClient(config.EVOLUTION_URL, config.EVOLUTION_API_KEY) if owns_client else None
         )
+        task = None
+        if run_analysis and config.GEMINI_API_KEY:
+            task = asyncio.create_task(analysis.run_loop(app.state.session_factory))
+        elif run_analysis:
+            logging.getLogger(__name__).warning("Sin GEMINI_API_KEY: las conversaciones no se analizarán")
         yield
+        if task:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
         if owns_client:
             await app.state.evolution.aclose()
         engine.dispose()
