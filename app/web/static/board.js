@@ -80,6 +80,13 @@
     markOpen();
   }
 
+  var PERSONAL_WARNING = "¿Marcar este chat como personal?\n\nSe borrarán los mensajes guardados y no se guardará ni se analizará nada más de este contacto.";
+
+  function changeStatus(id, status) {
+    if (status === "personal" && !window.confirm(PERSONAL_WARNING)) return Promise.resolve();
+    return setStatus(id, status);
+  }
+
   function setStatus(id, status) {
     return post("/conversations/" + id + "/status", { status: status }).then(function (r) { return r.json(); }).then(function (data) {
       if (!data.ok) { toast(data.error || "No se pudo cambiar el estado."); return; }
@@ -90,6 +97,18 @@
   // --- tablero ---
   root.addEventListener("click", function (event) {
     if (event.target.closest("a.go")) return; // "Ir al chat" abre WhatsApp, no el detalle
+    var moveBtn = event.target.closest("[data-move]");
+    if (moveBtn) {
+      event.stopPropagation();
+      if (moveBtn.getAttribute("aria-expanded") === "true") closeMenu(); else openMenu(moveBtn);
+      return;
+    }
+    var includeBtn = event.target.closest("[data-include]");
+    if (includeBtn) {
+      event.stopPropagation();
+      includeAgain(includeBtn.closest(".cardk").getAttribute("data-id"));
+      return;
+    }
     var confirmBtn = event.target.closest("[data-confirm]");
     if (confirmBtn) {
       event.stopPropagation();
@@ -100,7 +119,9 @@
     if (jump) {
       event.preventDefault();
       var lane = document.getElementById("lane-" + jump.getAttribute("data-jump"));
-      if (lane) lane.scrollIntoView({ behavior: "smooth", inline: "start", block: "nearest" });
+      var board = document.getElementById("board");
+      // Solo se desplaza el tablero: scrollIntoView movería también la hoja y cortaría la cabecera.
+      if (lane && board) board.scrollTo({ left: lane.getBoundingClientRect().left - board.getBoundingClientRect().left + board.scrollLeft, behavior: "smooth" });
       return;
     }
     var card = event.target.closest(".cardk");
@@ -144,14 +165,17 @@
     var card = root.querySelector('.cardk[data-id="' + id + '"]');
     dragging = false;
     root.querySelectorAll(".drop").forEach(function (el) { el.classList.remove("drop"); });
-    if (card && card.getAttribute("data-column") !== lane.getAttribute("data-status")) setStatus(id, lane.getAttribute("data-status"));
+    if (!card || card.getAttribute("data-column") === lane.getAttribute("data-status")) return;
+    if (card.getAttribute("data-column") === "personal") { toast("Usa «Volver a incluir» para sacar un chat de Personal."); return; }
+    changeStatus(id, lane.getAttribute("data-status"));
   });
 
   // --- detalle ---
   drawer.addEventListener("click", function (event) {
     if (event.target.closest("[data-close]")) { closeDrawer(); return; }
     var set = event.target.closest("[data-set]");
-    if (set) { setStatus(openId, set.getAttribute("data-set")); return; }
+    if (set) { changeStatus(openId, set.getAttribute("data-set")); return; }
+    if (event.target.closest("[data-include]")) { includeAgain(openId); return; }
     var analyze = event.target.closest("[data-analyze]");
     if (analyze) {
       analyze.disabled = true;
@@ -163,7 +187,115 @@
     }
   });
 
-  document.addEventListener("keydown", function (event) { if (event.key === "Escape" && openId) closeDrawer(); });
+  document.addEventListener("keydown", function (event) { if (event.key === "Escape" && !menu && openId) closeDrawer(); });
+
+  // --- menú «Mover» ---
+  var STATES = [
+    ["pendiente_seguimiento", "Pendiente"], ["cita_agendada", "Cita agendada"], ["vendida", "Vendida"],
+    ["resuelta", "Resuelta"], ["perdida", "Perdida"],
+  ];
+  var menu = null;
+  var menuOwner = null;
+
+  function closeMenu(returnFocus) {
+    if (menu) { menu.remove(); menu = null; }
+    if (menuOwner) {
+      menuOwner.setAttribute("aria-expanded", "false");
+      if (returnFocus) menuOwner.focus();
+      menuOwner = null;
+    }
+  }
+
+  function openMenu(button) {
+    closeMenu();
+    var card = button.closest(".cardk");
+    var id = card.getAttribute("data-id");
+    var current = card.getAttribute("data-column");
+    menu = document.createElement("div");
+    menu.className = "menu";
+    menu.setAttribute("role", "menu");
+    STATES.forEach(function (state) {
+      var item = document.createElement("button");
+      item.type = "button";
+      item.setAttribute("role", "menuitem");
+      item.setAttribute("data-to", state[0]);
+      item.setAttribute("data-status", state[0]);
+      var dot = document.createElement("span");
+      dot.className = "dot";
+      item.appendChild(dot);
+      item.appendChild(document.createTextNode(state[1]));
+      if (state[0] === current) {
+        item.setAttribute("aria-current", "true");
+        var tag = document.createElement("span");
+        tag.className = "cur";
+        tag.textContent = "actual";
+        item.appendChild(tag);
+      }
+      menu.appendChild(item);
+    });
+    menu.appendChild(document.createElement("hr"));
+    var personal = document.createElement("button");
+    personal.type = "button";
+    personal.className = "quiet";
+    personal.setAttribute("role", "menuitem");
+    personal.setAttribute("data-to", "personal");
+    personal.textContent = "Personal (ignorar)";
+    menu.appendChild(personal);
+    document.body.appendChild(menu);
+
+    var rect = button.getBoundingClientRect();
+    var left = Math.max(8, Math.min(rect.right - menu.offsetWidth, window.innerWidth - menu.offsetWidth - 8));
+    var top = rect.bottom + 4;
+    if (top + menu.offsetHeight > window.innerHeight - 8) top = Math.max(8, rect.top - menu.offsetHeight - 4);
+    menu.style.left = left + "px";
+    menu.style.top = top + "px";
+    menuOwner = button;
+    button.setAttribute("aria-expanded", "true");
+
+    menu.addEventListener("click", function (event) {
+      var item = event.target.closest("[data-to]");
+      if (!item) return;
+      closeMenu();
+      if (item.getAttribute("data-to") !== current) changeStatus(id, item.getAttribute("data-to"));
+    });
+    menu.addEventListener("keydown", function (event) {
+      var items = Array.prototype.slice.call(menu.querySelectorAll("button"));
+      var index = items.indexOf(document.activeElement);
+      if (event.key === "ArrowDown") { event.preventDefault(); items[(index + 1) % items.length].focus(); }
+      if (event.key === "ArrowUp") { event.preventDefault(); items[(index - 1 + items.length) % items.length].focus(); }
+      if (event.key === "Escape") { event.stopPropagation(); closeMenu(true); }
+    });
+    menu.querySelector("button").focus();
+  }
+
+  document.addEventListener("click", function (event) {
+    if (menu && !event.target.closest(".menu") && !event.target.closest("[data-move]")) closeMenu();
+  });
+  window.addEventListener("resize", function () { closeMenu(); });
+  window.addEventListener("scroll", function () { closeMenu(); }, true);
+
+  // --- chats personales ---
+  function includeAgain(id) {
+    return post("/conversations/" + id + "/include").then(function (r) { return r.json(); }).then(function (data) {
+      if (!data.ok) { toast(data.error || "No se pudo incluir el chat."); return; }
+      if (String(openId) === String(id)) closeDrawer();
+      toast("Chat incluido: se guardará desde su próximo mensaje");
+      return refresh();
+    });
+  }
+
+  root.addEventListener("submit", function (event) {
+    var form = event.target.closest("[data-ignore-form]");
+    if (!form) return;
+    event.preventDefault();
+    var input = form.querySelector("input[name=phone]");
+    if (!input.value.trim()) return;
+    post("/ignored", { phone: input.value }).then(function (r) { return r.json(); }).then(function (data) {
+      if (!data.ok) { toast(data.error || "No se pudo ignorar el número."); return; }
+      toast("Número ignorado: no se guardará ni se analizará");
+      return refresh();
+    });
+  });
 
   function plural(n, one, many) { return n + " " + (n === 1 ? one : many); }
 

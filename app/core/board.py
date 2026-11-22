@@ -3,11 +3,11 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from app import config
-from app.db import CLOSED_STATUSES, STATUSES, Connection, Conversation, Correction, Message, now_utc
+from app.db import CLOSED_STATUSES, PERSONAL, STATUSES, Connection, Conversation, Correction, Message, now_utc
 
 UNSORTED = "sin_clasificar"
 COLUMN_LIMIT = 30  # tarjetas visibles por columna; el resto se cuenta
@@ -19,6 +19,7 @@ COLUMNS = [
     ("vendida", "Vendida", "Compra o pago confirmado"),
     ("resuelta", "Resuelta", "Atendida, sin nada pendiente"),
     ("perdida", "Perdida", "El cliente no sigue"),
+    (PERSONAL, "Personal", "Chats que no son de negocio: no se guardan ni se analizan"),
 ]
 LABELS = {key: label for key, label, _ in COLUMNS}
 
@@ -51,6 +52,8 @@ def when(moment: datetime, now: datetime) -> str:
 
 
 def column_of(conv: Conversation) -> str:
+    if conv.ignored:
+        return PERSONAL
     return conv.status or conv.suggested_status or UNSORTED
 
 
@@ -75,6 +78,7 @@ class Card:
     suggested_label: Optional[str]
     done: bool
     analyzed: bool
+    ignored: bool = False
 
 
 @dataclass
@@ -143,6 +147,7 @@ def build_card(conv: Conversation, last: Optional[Message], phone: Optional[str]
         suggested_label=LABELS.get(sugg) if sugg else None,
         done=conv.done,
         analyzed=conv.last_analyzed_at is not None,
+        ignored=bool(conv.ignored),
     )
 
 
@@ -172,7 +177,7 @@ def build_board(session: Session, account_id: int, now: Optional[datetime] = Non
             select(Conversation)
             .join(Connection, Connection.id == Conversation.connection_id)
             .where(Connection.account_id == account_id)
-            .order_by(Conversation.last_message_at.desc())
+            .order_by(Conversation.last_message_at.desc().nulls_last())
         )
     )
     cards = load_cards(session, convs, now)
@@ -195,13 +200,51 @@ def build_board(session: Session, account_id: int, now: Optional[datetime] = Non
     return Board(list(by_key.values()), waiting, overdue, attention, sales, len(cards))
 
 
+def mark_personal(session: Session, conv: Conversation) -> None:
+    """Chat personal: se borran los mensajes guardados y no se guardará ni analizará nada más de este contacto."""
+    session.execute(delete(Message).where(Message.conversation_id == conv.id))
+    conv.ignored = True
+    conv.status = PERSONAL
+    conv.suggested_status = None
+    conv.summary = conv.next_action = conv.amount = conv.follow_up_at = None
+    conv.unanswered = conv.done = False
+    conv.last_analyzed_at = conv.last_reminded_at = None
+
+
 def set_status(session: Session, conv: Conversation, status: str) -> None:
     """La persona confirma o cambia el estado. Se guarda la corrección para medir el acierto de la IA."""
+    if status == PERSONAL:
+        mark_personal(session, conv)
+        return
     if status not in STATUSES:
         raise ValueError("Estado no válido")
+    if conv.ignored:
+        raise ValueError("Este chat es personal: usa «Volver a incluir» para tratarlo como un chat de negocio.")
     session.add(Correction(conversation_id=conv.id, suggested_status=conv.suggested_status, final_status=status))
     conv.status = status
     conv.done = status in CLOSED_STATUSES and not conv.unanswered
+
+
+def include_again(session: Session, conv: Conversation) -> None:
+    """Saca el chat de «Personal». Se borra su marca: el próximo mensaje lo crea como un chat nuevo."""
+    session.execute(delete(Correction).where(Correction.conversation_id == conv.id))
+    session.execute(delete(Message).where(Message.conversation_id == conv.id))
+    session.delete(conv)
+
+
+def ignore_number(session: Session, account_id: int, digits: str) -> int:
+    """Ignora un número en todas las conexiones de la cuenta, aunque aún no haya escrito."""
+    jid = f"{digits}@s.whatsapp.net"
+    count = 0
+    for conn in session.scalars(select(Connection).where(Connection.account_id == account_id)):
+        conv = session.scalar(select(Conversation).where(Conversation.connection_id == conn.id, Conversation.remote_jid == jid))
+        if conv is None:
+            conv = Conversation(connection_id=conn.id, remote_jid=jid, last_message_at=now_utc())
+            session.add(conv)
+            session.flush()
+        mark_personal(session, conv)
+        count += 1
+    return count
 
 
 def thread(session: Session, conversation_id: int, limit: int = 80) -> list[Message]:

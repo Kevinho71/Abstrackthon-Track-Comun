@@ -163,9 +163,31 @@ def conversation_status(conversation_id: int, status: str = Form(""), account: A
     conv = _owned_conversation(session, account, conversation_id)
     try:
         boards.set_status(session, conv, status)
-    except ValueError:
-        return JSONResponse({"ok": False, "error": "Estado no válido"}, status_code=400)
-    return {"ok": True, "column": conv.status}
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    return {"ok": True, "column": boards.column_of(conv)}
+
+
+@router.post("/conversations/{conversation_id}/include")
+def conversation_include(conversation_id: int, account: Account = Depends(current_account),
+                         session: Session = Depends(get_session)):
+    """Saca un chat de «Personal»."""
+    conv = _owned_conversation(session, account, conversation_id)
+    boards.include_again(session, conv)
+    return {"ok": True}
+
+
+@router.post("/ignored")
+def ignore_a_number(phone: str = Form(""), account: Account = Depends(current_account), session: Session = Depends(get_session)):
+    """Marca un número como personal: no se guardará ni se analizará nada de él."""
+    try:
+        digits = conns.normalize_phone(phone)
+    except conns.UserError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    count = boards.ignore_number(session, account.id, digits)
+    if count == 0:
+        return JSONResponse({"ok": False, "error": "Primero conecta un número de WhatsApp."}, status_code=400)
+    return {"ok": True, "number": digits}
 
 
 MANUAL_BATCH = 8  # chats por pulsación, para no tardar demasiado ni agotar la cuota del modelo

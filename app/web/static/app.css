@@ -24,6 +24,7 @@
   --st-vendida: #1e7b4f;
   --st-resuelta: #5d6b66;
   --st-perdida: #c4242a;
+  --st-personal: #8a8f8c;
 
   --pill-warning-bg: #fff4dc;  --pill-warning-ink: #7a3b06;
   --pill-negative-bg: #ffedea; --pill-negative-ink: #831c1e;
@@ -143,6 +144,7 @@ form.inline { display: inline; }
 [data-status="vendida"] { --c: var(--st-vendida); }
 [data-status="resuelta"] { --c: var(--st-resuelta); }
 [data-status="perdida"] { --c: var(--st-perdida); }
+[data-status="personal"] { --c: var(--st-personal); }
 
 /* ------------------------------------------------------------------ tablero */
 .board { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(268px, 1fr); gap: var(--gap); overflow-x: auto; padding: 0 0 12px; scroll-snap-type: x proximity; align-items: start; }
@@ -182,6 +184,23 @@ form.inline { display: inline; }
 .suggest { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 12px; color: var(--muted); }
 .go { align-self: flex-start; display: inline-flex; align-items: center; gap: 5px; font-size: 13px; font-weight: 500; color: var(--accent); text-decoration: none; padding: 2px 0; }
 .go:hover { text-decoration: underline; }
+.go.plain { background: none; border: 0; cursor: pointer; font-family: inherit; }
+.acts { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.mv { display: inline-flex; align-items: center; gap: 5px; min-height: 26px; padding: 0 9px; border: 1px solid var(--control); border-radius: var(--radius-control); background: var(--sheet); color: var(--text); font-size: 13px; cursor: pointer; }
+.mv:hover, .mv[aria-expanded="true"] { background: var(--active); }
+.cardk.personal { cursor: default; background: transparent; border-style: dashed; }
+.cardk.personal .name { color: var(--muted); }
+.personal-btn { color: var(--muted) !important; }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.ignore-form { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; padding-top: 10px; border-top: 1px solid var(--control); }
+.ignore-form input { min-height: 32px; font-size: 13px; }
+.menu { position: fixed; z-index: 30; width: 212px; background: var(--sheet); border: 1px solid var(--border); border-radius: var(--radius-card); box-shadow: 0 10px 28px rgba(19, 24, 27, .14); padding: 4px; }
+.menu button { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 34px; padding: 0 10px; border: 0; background: none; border-radius: 6px; text-align: left; color: var(--text); font-size: 14px; cursor: pointer; }
+.menu button:hover, .menu button:focus-visible { background: var(--active); outline: none; }
+.menu button[aria-current="true"] { font-weight: 600; }
+.menu .cur { margin-left: auto; font-size: 12px; color: var(--muted); font-weight: 400; }
+.menu hr { border: 0; border-top: 1px solid var(--rule); margin: 4px 2px; }
+.menu .quiet { color: var(--muted); }
 .suggest b { color: var(--text); font-weight: 500; }
 .suggest button { background: none; border: 0; color: var(--accent); font-weight: 600; cursor: pointer; padding: 2px 0; font-size: 13px; }
 .suggest button:hover { text-decoration: underline; }
