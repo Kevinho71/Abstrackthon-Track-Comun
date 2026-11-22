@@ -1,172 +1,234 @@
-# Plan del proyecto: Agente de seguimiento de chats (Telegram + Gemini + Railway)
+# Plan del proyecto: Agente de seguimiento de chats (WhatsApp con Evolution API, Gemini, web y Telegram, todo en Railway)
 
-> Track: **Comercios**. Mejora cómo un equipo se informa y se coordina: cada conversación queda resumida, clasificada y con dueño, y nadie deja clientes colgados.
+> Track: **Comercios**. Cada conversación de WhatsApp queda guardada, resumida, clasificada y con dueño, y nadie deja clientes colgados.
+> Alternativas evaluadas y criterios de cambio: [ALTERNATIVAS.md](ALTERNATIVAS.md).
 
-## 1. Qué es el MVP
+## 1. Qué se construye
 
-Un bot de Telegram para agentes de call center o atención de negocios.
+Un servicio web para negocios y call centers que atienden clientes por WhatsApp.
 
-1. El agente le pasa un chat (archivo `.txt` exportado de WhatsApp, o texto pegado).
-2. El bot devuelve un **resumen**, un **estado** y la **siguiente acción**.
-3. Guarda el chat y **recuerda** al agente los pendientes y las preguntas sin responder.
+1. Una persona entra a la web, crea su cuenta y pulsa **«Conectar WhatsApp»**. Vincula su número escaneando un QR o escribiendo un código de emparejamiento, igual que en «Dispositivos vinculados». Sigue usando WhatsApp en su teléfono sin cambios.
+2. Cada mensaje de sus chats individuales llega por webhook desde Evolution API y se guarda en la base de datos. No hay exportación manual.
+3. Cuando una conversación lleva 10 minutos sin mensajes nuevos, Gemini sugiere un **resumen**, un **estado**, la **siguiente acción** y una **fecha de seguimiento**.
+4. La persona confirma o cambia el estado en la web.
+5. Los recordatorios (seguimiento vencido, cliente esperando respuesta) aparecen en la web y llegan a su **Telegram**.
 
 **Estados:** `vendida`, `cita_agendada`, `pendiente_seguimiento`, `resuelta`, `perdida`.
 
-**Fuera del MVP:** conexión directa a WhatsApp, dashboard web, multi-empresa, panel de supervisor. Ver Fase 7.
+El sistema solo **escucha**. No envía mensajes por WhatsApp desde las sesiones de los clientes.
 
-## 2. Decisiones tomadas
+## 2. Decisiones
 
-| Tema | Decisión | Motivo |
-|---|---|---|
-| Canal | Telegram Bot API (long polling) | Gratis y sin verificación de Meta. Un solo proceso, sin dominio ni webhook. |
-| LLM | `gemini-3.5-flash-lite` vía Google AI Studio | Nivel gratuito, salida JSON con esquema, rápido y barato. |
-| Lenguaje | Python 3.12 | `python-telegram-bot` y `google-genai` son maduros. |
-| Base de datos | SQLite en un Volume de Railway | Sin servicio extra que consuma crédito. Migrable a Postgres. |
-| Recordatorios | JobQueue de `python-telegram-bot` dentro del mismo proceso | Un solo servicio que desplegar. |
-| Despliegue | Railway, un servicio tipo worker, sin puerto expuesto | Menor consumo de recursos. |
+| Tema | Decisión |
+|---|---|
+| Conexión con WhatsApp | Evolution API v2.3.7 (versión fija), en el mismo contenedor que el backend. Una instancia por número conectado. |
+| Registro del número | QR y código de emparejamiento. El número se envía al crear la instancia; sin él no hay código. Botón «reintentar» que no crea otra instancia. |
+| Entrada de mensajes | Webhook `messages.upsert` de Evolution hacia el backend, por `127.0.0.1` dentro del contenedor. El token viaja en la cabecera `x-webhook-token`. |
+| Envío de mensajes | Ninguno por WhatsApp. Los avisos al agente van por Telegram. |
+| Backend | Python 3.12, FastAPI, SQLAlchemy 2, `httpx`, `python-telegram-bot`, `google-genai`. |
+| Base de datos | Neon (Postgres), proyecto `chat-followup` con dos bases: `app` (datos del producto) y `evolution` (sesiones de WhatsApp). Las pruebas usan SQLite. |
+| Panel | Web servida por FastAPI (Jinja2 + HTMX). |
+| LLM | `gemini-3.5-flash-lite` con salida JSON validada con Pydantic. |
+| Quién decide el estado | La IA sugiere (`suggested_status`) y la persona confirma (`status`). |
+| Despliegue | **Un solo servicio en Railway**, construido desde el `Dockerfile`. `start.sh` arranca Evolution y el backend en el mismo contenedor. |
+| Segunda etapa | Adaptador para la Cloud API oficial de Meta con coexistencia (Tech Provider), como plan «oficial». |
 
 ## 3. Arquitectura
 
 ```
- Agente (Telegram)
-      │  .txt exportado / texto pegado / comandos / botones
-      ▼
- ┌──────────────────────── Proceso único en Railway ───────────────────────┐
- │  app/main.py        arranque, handlers, JobQueue                        │
- │  app/handlers.py    comandos, documentos, botones                       │
- │  app/parser.py      normaliza el export de WhatsApp                     │
- │  app/llm.py         Gemini → JSON validado con Pydantic                 │
- │  app/db.py          SQLite (chats, agentes)                             │
- │  app/reminders.py   tarea cada N min: pendientes vencidos / sin responder │
- └──────────────┬──────────────────────────────────────────────────────────┘
-                ▼
-        Volume /data/app.db
+ Navegador ──HTTPS──► Railway: un solo servicio (Dockerfile)
+                      ┌───────────────────────────────────────────────┐
+                      │ backend FastAPI  (puerto $PORT, público)      │
+                      │   /api/connections   crea la instancia, QR    │
+                      │   /webhook/evolution recibe los eventos       │
+                      │   web + tareas + bot de Telegram              │
+                      │        ▲ 127.0.0.1:$PORT   │ 127.0.0.1:8081   │
+                      │        │                   ▼                  │
+                      │ Evolution API (solo dentro del contenedor)    │
+                      └────────┬──────────────────┬───────────────────┘
+                               ▼                  ▼
+                  Neon · base `app`      Neon · base `evolution`
+                  (cuentas, conversaciones,   (sesiones de WhatsApp)
+                   mensajes)
+```
+
+- Railway enruta el dominio público solo al puerto `$PORT` (el backend). Evolution escucha en `127.0.0.1:8081` y no es accesible desde fuera.
+- El backend habla con Evolution con la clave global `AUTHENTICATION_API_KEY`. Evolution envía los eventos al backend con el token en la cabecera `x-webhook-token`.
+- `start.sh` arranca los dos procesos. Si uno termina, el contenedor se detiene y Railway lo reinicia.
+- Evolution solo guarda las sesiones en su base. Los mensajes los guarda el backend en la base `app`.
+- Se ejecuta una sola instancia del servicio.
+
+### Flujo de un mensaje
+
+```
+Cliente ► WhatsApp ► sesión de Evolution ──POST messages.upsert──► /webhook/evolution
+   guarda en messages (única por instancia + id del mensaje) ► actualiza la conversación
+   ► tarea cada minuto: 10 min de silencio ► Gemini ► suggested_status ► web y Telegram
+```
+
+### Flujo de registro del número
+
+```
+Web ► POST /api/connections {nombre, número}
+    ► backend: crea la instancia en Evolution, configura el webhook, pide el QR / código
+    ► web muestra QR y código, y consulta el estado cada 2 s
+    ► evento connection.update (state = open) ► la conexión pasa a «conectado»
+    ► si se cae: connection.update (close) ► la web ofrece «reconectar»
 ```
 
 ### Modelo de datos
 
-- `agents(telegram_id PK, name, wa_name, created_at)`. `wa_name` es el nombre del agente dentro de WhatsApp, y sirve para saber quién habló último.
-- `chats(id PK, agent_id, customer, summary, status, next_action, amount, follow_up_at, unanswered, done, last_reminded_at, created_at, updated_at)`. Las fechas se guardan en UTC.
+- `accounts(id, email, password_hash, name, telegram_id, link_token, tz, created_at)`.
+- `connections(id, account_id, instance_name UNIQUE, phone, state, created_at, connected_at)`. `state`: `creating`, `qr`, `connecting`, `open`, `closed`.
+- `conversations(id, connection_id, remote_jid, customer_name, summary, suggested_status, status, next_action, amount, follow_up_at, unanswered, done, last_message_at, last_analyzed_at, last_reminded_at)`. Única por `(connection_id, remote_jid)`.
+- `messages(id, conversation_id, wa_message_id, direction, text, type, sent_at)`. Única por `(conversation_id, wa_message_id)`.
+- `corrections(id, conversation_id, suggested_status, final_status, at)`.
 
-### Flujo
-
-1. El agente envía un `.txt` o pega la conversación.
-2. `parser` normaliza el texto y detecta el último autor.
-3. `llm` envía la transcripción con la fecha actual (para resolver "mañana", "el lunes") y recibe un JSON.
-4. Regla determinista: si el último mensaje es del propio agente (`wa_name`), no hay pregunta sin responder, sin importar lo que diga el modelo.
-5. Se guarda el chat y el bot responde con la ficha y botones para corregir el estado o marcar como hecho.
-6. Cada 15 minutos el worker busca pendientes con fecha vencida o sin responder y avisa al agente. Hay un enfriamiento de 2 horas entre avisos del mismo chat.
+Las fechas se guardan en UTC.
 
 ## 4. Fases
 
-### Fase 0. Cuentas y credenciales (30 min)
-- [ ] Crear el bot con @BotFather y guardar `TELEGRAM_BOT_TOKEN`.
-- [ ] Crear la API key en Google AI Studio (`GEMINI_API_KEY`).
-- [ ] Obtener el propio `telegram_id` (con @userinfobot) para `ALLOWED_USER_IDS`.
-- [ ] Crear el repo en GitHub y la cuenta en Railway.
+### Fase 0. Infra en Railway y prueba técnica de Evolution (1–2 días, con la persona responsable)
+- [x] Proyecto de Neon `chat-followup` (región `aws-us-east-1`) con las bases `app` y `evolution`.
+- [x] `Dockerfile` y `start.sh`: Evolution v2.3.7 y el backend en un solo contenedor, sin Redis. Probado en local contra Neon: Evolution aplica sus migraciones, exige su clave, crea instancias, genera el QR y el código de emparejamiento, y sus webhooks llegan al backend.
+- [ ] Un solo servicio en Railway desde este repositorio, con dominio público y las variables de la sección 8. Si hay desconexiones o QR que no aparecen, añadir Redis.
+- [ ] **Prueba técnica** con 5 números distintos, usando el código de emparejamiento y el QR:
+  - Se registran a la primera o a la segunda.
+  - Las 5 sesiones siguen conectadas 24–48 horas.
+  - El webhook recibe los mensajes entrantes y los enviados desde el teléfono, sin duplicados.
+  - Se anota qué trae `syncFullHistory` y el formato exacto del evento `messages.upsert`.
+- [ ] Si Evolution no cumple, repetir la prueba con las alternativas de [ALTERNATIVAS.md](ALTERNATIVAS.md).
 
-**Listo cuando:** tienes ambos tokens guardados en `.env` (no se sube a git).
+**Listo cuando:** la prueba se cumple y los resultados quedan anotados en `docs/prueba-evolution.md`.
 
-### Fase 1. Base del proyecto y bot local (medio día)
-- [ ] Estructura de carpetas, `requirements.txt`, `.env.example`, `.gitignore`.
-- [ ] `/start`, `/ayuda`, `/nombre`.
-- [ ] Parser de exportaciones de WhatsApp (Android e iOS) con pruebas.
-- [ ] Bot corriendo en local con long polling.
+### Fase 1. Núcleo de datos, cliente de Evolution y webhook (código)
+- [x] Esquema en SQLAlchemy con las tablas de la sección 3 (`app/db.py`). Las tablas se crean al arrancar; Alembic se añade con el primer cambio de esquema en producción.
+- [x] Cliente de Evolution (`httpx`): crear instancia, configurar webhook, pedir QR o código, consultar estado, cerrar sesión y borrar instancia (`app/channels/evolution.py`).
+- [x] `POST /webhook/evolution` con verificación del token, extracción del texto de `messages.upsert`, filtrado de grupos y estados, y guardado idempotente (`app/channels/webhook.py`).
+- [x] Conversación creada o actualizada por `(connection_id, remote_jid)`, con `last_message_at` y `unanswered` (`app/core/ingest.py`).
+- [x] Manejo de `connection.update` y `qrcode.updated` para el estado de la conexión.
+- [x] Pruebas con payloads de ejemplo de Evolution (`tests/`).
+- [x] Esquema creado y guardado idempotente verificados contra Postgres (Neon).
+- [x] Endpoints de Evolution verificados contra la versión 2.3.7. Quedan por contrastar los payloads reales de `messages.upsert` (lista en `docs/prueba-evolution.md`).
 
-**Listo cuando:** `python -m app.main` responde a `/start` y las pruebas del parser pasan.
+**Listo cuando:** un payload `messages.upsert` repetido deja una sola fila en `messages` y la conversación queda actualizada.
 
-### Fase 2. Análisis con Gemini (1 día)
-- [ ] Esquema Pydantic y prompt de sistema en español.
-- [ ] Salida JSON forzada (`response_mime_type` + `response_schema`).
-- [ ] Reintentos con espera ante errores o límites de tasa (429).
-- [ ] Recortar transcripciones largas (conservar el final) para controlar tokens.
-- [ ] **Evaluación:** 30 chats de prueba (sintéticos o anonimizados) con el estado esperado anotado a mano.
+### Fase 2. Cuentas y registro del número
+- [x] Registro e inicio de sesión: contraseña con scrypt, sesión por cookie firmada, correo sin distinguir mayúsculas (`app/web/auth.py`, `app/web/routes.py`).
+- [x] Pantalla «Conectar WhatsApp»: número, QR y código de emparejamiento, estados (preparando, esperando escaneo, conectando, conectado, desconectado) y botón «Generar uno nuevo» que reutiliza la instancia (`app/core/connections.py`, `app/web/templates/`).
+- [x] La página se actualiza sola: consulta el estado cada 3 s y renueva el QR cada 25 s. Si Evolution perdió la instancia, se vuelve a crear con el mismo nombre.
+- [x] «Desconectar» borra la instancia y conserva los mensajes guardados. «Reconectar» desde el panel vuelve a mostrar el código.
+- [x] Aviso en el formulario de que la conexión no es oficial, de que solo se leen los chats y de que conviene empezar con un número secundario.
+- [x] Límite de 5 números por cuenta y aislamiento entre cuentas (otra cuenta recibe 404).
+- [x] Probado de punta a punta contra Evolution real en Docker y en un navegador, sin errores de consola.
+- [ ] Vincular un teléfono real con el código y ver llegar sus mensajes (requiere un número real).
 
-**Listo cuando:** el estado coincide con el esperado en al menos el 85% de los casos y no hay JSON inválido en la muestra.
+**Listo cuando:** una persona registra su número desde la web y sus mensajes aparecen en la base de datos.
 
-### Fase 3. Persistencia y seguimiento (medio día)
-- [ ] Guardar cada análisis en SQLite.
-- [ ] `/pendientes`, `/resumen`, `/hecho <id>`.
-- [ ] Botones en cada ficha para corregir el estado o marcar como hecho.
-- [ ] Guardar las correcciones del agente: sirven como ejemplos para mejorar el prompt.
+### Fase 3. Análisis con Gemini
+- [x] Tarea cada minuto: conversaciones con 10 minutos de silencio y mensajes nuevos desde el último análisis, hasta 10 por ciclo (`app/core/analysis.py`).
+- [x] `llm.analyze` sobre la conversación completa (recortando el inicio si es larga) y guardado en `suggested_status`, resumen, acción, monto y fecha. La persona confirma después (`status`).
+- [x] Regla determinista: solo hay pregunta sin responder si el último mensaje es del cliente.
+- [x] Modelo de respaldo (`GEMINI_FALLBACK_MODEL`) ante errores 503 y 429, y reintento a los 15 minutos si un análisis falla.
+- [x] Evaluación con 30 conversaciones sintéticas (`samples/eval_chats.json`, `python -m app.eval`).
+- [ ] Medir las 30 conversaciones completas. En la primera corrida, Gemini respondió 16 de 30 y acertó las 16; las otras 14 fallaron con 503 («alta demanda»).
+- [ ] Botón «Analizar ahora» (pasa a la Fase 4, junto con la vista de la conversación).
 
-**Listo cuando:** un agente analiza 5 chats y ve su lista de pendientes correcta.
+**Listo cuando:** el estado coincide en al menos el 85 % de los casos y no hay JSON inválido.
 
-### Fase 4. Recordatorios (medio día)
-- [ ] Tarea periódica (`run_repeating`, cada 15 min por defecto).
-- [ ] Reglas: `follow_up_at` vencido, o `unanswered=1`, con enfriamiento de 2 h.
-- [ ] Botones en el recordatorio: "Hecho" y "Pospuesto".
-- [ ] Mejoras opcionales: horario silencioso y resumen diario a las 9 am.
+### Fase 4. Web
+- [ ] Tablero por estado.
+- [ ] Bandeja de sugerencias por confirmar: aceptar o cambiar el estado, guardado en `corrections`.
+- [ ] Lista «Hoy» con seguimientos vencidos y clientes esperando respuesta.
+- [ ] Vista de la conversación con el resumen y los mensajes.
 
-**Listo cuando:** un chat con seguimiento a 2 minutos dispara el aviso una sola vez y no repite al agente.
+**Listo cuando:** una persona confirma 5 conversaciones y las ve en su tablero.
 
-### Fase 5. Despliegue en Railway (medio día)
-- [ ] Subir el repo a GitHub y crear un proyecto en Railway desde el repo.
-- [ ] Servicio sin dominio público; comando de inicio `python -m app.main`.
-- [ ] Añadir un **Volume** montado en `/data` y `DB_PATH=/data/app.db`.
-- [ ] Variables: `TELEGRAM_BOT_TOKEN`, `GEMINI_API_KEY`, `GEMINI_MODEL`, `TZ`, `ALLOWED_USER_IDS`, `DB_PATH`.
-- [ ] Revisar logs y probar reinicios: los datos deben persistir.
-- [ ] **Ejecutar una sola instancia.** Dos procesos con el mismo token de Telegram dan el error `Conflict: terminated by other getUpdates`.
+### Fase 5. Recordatorios y Telegram
+- [ ] Vinculación de Telegram con `/start <link_token>` desde la cuenta.
+- [ ] Tarea cada 15 minutos: seguimiento vencido o `unanswered = true`, con enfriamiento de 2 horas.
+- [ ] Aviso por Telegram con botones «Hecho», «En 1 h» y enlace a la conversación.
+- [ ] Horario silencioso y resumen diario a las 9 am.
 
-**Listo cuando:** el bot responde con el computador apagado y los pendientes sobreviven a un redeploy.
+**Listo cuando:** un seguimiento a 2 minutos dispara un solo aviso en la web y en Telegram.
 
-### Fase 6. Piloto y métricas (1 semana)
-- [ ] 2 o 3 agentes usan el bot con chats reales (previa autorización).
-- [ ] Métricas: % de estados corregidos por el agente, tiempo ahorrado por chat, pendientes cerrados tras un recordatorio.
+### Fase 6. Piloto
+- [ ] 2 o 3 personas con su número real, con consentimiento de sus clientes.
+- [ ] Métricas: % de estados corregidos, tiempo ahorrado por chat, pendientes cerrados tras un recordatorio, sesiones caídas por semana.
 - [ ] Ajustar el prompt con las correcciones recogidas.
 
-### Fase 7. Siguientes pasos (después del MVP)
-- Conexión directa a WhatsApp Cloud API (requiere verificación de Meta).
-- Dashboard web para supervisores, con estados por agente.
-- Postgres, multi-empresa, exportar a CRM.
-- Recordatorios por WhatsApp con plantillas.
+### Fase 7. Conexión oficial y planes
+- [ ] Verificación del negocio en Meta y App Review como Tech Provider.
+- [ ] Adaptador de la Cloud API con Embedded Signup y coexistencia.
+- [ ] Planes en la web: **Conexión rápida** (Evolution) y **Conexión oficial** (Cloud API).
+
+### Fase 8. Después
+- Varios usuarios por cuenta y panel de supervisor.
+- Transcripción de audios con Gemini.
+- Exportación a CRM.
 
 ## 5. Costos
 
-| Concepto | MVP | Notas |
-|---|---|---|
-| Telegram Bot API | 0 | Gratis. Límites de velocidad: unos 30 mensajes/s en total y 1/s por chat. |
-| Gemini 3.5 Flash-Lite | 0 en nivel gratuito | De pago: [0,30 USD por millón de tokens de entrada y 2,50 USD de salida](https://ai.google.dev/gemini-api/docs/models/gemini-3.5-flash-lite). Chat típico (3.000 entrada, 300 salida): unos 0,002 USD. 30.000 chats/mes: unos 50 USD. |
-| Railway | 0 durante la prueba | Prueba de 30 días con un crédito único de 5 USD. Luego el plan Free (1 USD/mes de uso) o Hobby (5 USD/mes). |
+| Concepto | Costo |
+|---|---|
+| Evolution API | Gratis. Se paga el servicio en Railway. Revisar su licencia antes de usarla comercialmente. |
+| Railway (un servicio con Evolution y el backend) | Plan Hobby desde 5 USD al mes más el uso. El consumo real se mide en la Fase 0. |
+| Neon (Postgres) | Plan gratuito para empezar. Evolution y las tareas periódicas mantienen la base despierta, así que hay que vigilar las horas de cómputo incluidas y pasar a un plan de pago si se agotan. |
+| Gemini Flash-Lite | Unos 0,002 USD por análisis. Una cuenta con 100 conversaciones al día: unos 6 USD al mes. En producción se usa el nivel de pago, porque en el gratuito Google puede usar los datos. |
+| Telegram Bot API | Gratis. |
+| WhatsApp Cloud API oficial (Fase 7) | Recibir no se cobra. Se cobran los mensajes de plantilla enviados. Tarifas de terceros para «Resto de Latinoamérica» (incluye Bolivia): marketing 0,0740 USD, utilidad y servicio 0,0113 USD. Confirmar en Meta. |
 
-### Límites que hay que conocer
-- **Nivel gratuito de Gemini:** la cuota por minuto y por día no está confirmada oficialmente. Una fuente de terceros indica 30 solicitudes/min y 1.500/día. Mira tu panel de AI Studio. Con 100 chats/día por agente, unos 15 agentes agotarían la cuota.
-- **Privacidad:** en el nivel gratuito de la API de Gemini, Google puede usar los datos para mejorar sus productos (confirma los términos vigentes). Para la demo usa **chats sintéticos o anonimizados**, no datos reales de clientes.
-- **Railway tras la prueba:** el plan Free hace dormir los servicios inactivos, y un bot con long polling necesita estar despierto para enviar recordatorios. Para uso continuo planifica el plan Hobby (5 USD/mes). Según las [docs de Railway](https://docs.railway.com/pricing/free-trial), la prueba termina a los 30 días o al gastar los 5 USD.
+**Precio sugerido para el plan «Conexión rápida»:** el costo por número (Gemini más la parte de infraestructura) ronda los 6–10 USD al mes. Una hipótesis de partida es cobrar entre 15 y 20 USD al mes por número, y validarla en el piloto.
 
 ## 6. Riesgos
 
 | Riesgo | Mitigación |
 |---|---|
-| Datos personales de clientes | Anonimizar en la demo; `ALLOWED_USER_IDS`; plan de consentimiento y proveedor de pago para producción. |
-| Clasificación errónea | Botones de corrección en cada ficha, métrica de aciertos, ejemplos en el prompt. |
-| Cuota gratuita agotada | Reintentos con espera, mensaje claro al agente y opción de pasar al nivel de pago. |
-| Pérdida de la base de datos | Volume en Railway y comando `/exportar` (futuro). |
-| Formato del export de WhatsApp distinto por idioma o región | Parser tolerante, y si no reconoce el formato trata el texto como transcripción libre. |
+| WhatsApp bloquea un número vinculado por una conexión no oficial | Solo se escucha, sin enviar. Aviso al registrarse. Plan «Conexión oficial» en la Fase 7. |
+| El registro del número falla o se pierde la sesión | Versión fija de Evolution, QR y código de emparejamiento, reconexión automática y la prueba de la Fase 0. |
+| Un cambio de protocolo de WhatsApp rompe Evolution | Actualizar la versión solo tras repetir la prueba. Alternativas en [ALTERNATIVAS.md](ALTERNATIVAS.md). |
+| Licencia de Evolution incompatible con el uso comercial | Leer la licencia en la Fase 0. Si no sirve, cambiar de proveedor con el mismo adaptador. |
+| Datos personales de clientes | Consentimiento, acceso por cuenta, Gemini de pago y anonimización en las pruebas. |
+| Clasificación errónea | La IA solo sugiere. La persona confirma y se mide el acierto. |
+| Entregas duplicadas del webhook | Clave única por instancia e id del mensaje. |
+| Evolution expuesto a internet | Escucha solo en `127.0.0.1` dentro del contenedor. Railway solo enruta el puerto del backend. |
+| Evolution y el backend comparten contenedor | Si uno cae, el contenedor se reinicia con los dos. Un fallo de Evolution corta el webhook hasta que vuelve. |
+| La cuota de cómputo gratuita de Neon se agota | Medirla en el piloto. Alternativa: plan de pago de Neon. |
 
 ## 7. Estructura de carpetas
 
 ```
-hack-comunicacion/
+Track-Comun/
 ├── PLAN.md
+├── ALTERNATIVAS.md
 ├── README.md
 ├── requirements.txt
+├── Dockerfile          Evolution + backend en una sola imagen
+├── start.sh            arranca los dos procesos
 ├── railway.toml
 ├── .env.example
-├── .gitignore
-├── .python-version
+├── docs/
+│   └── prueba-evolution.md
 ├── app/
-│   ├── __init__.py
+│   ├── main.py             FastAPI y arranque de tareas
 │   ├── config.py
-│   ├── db.py
-│   ├── parser.py
+│   ├── db.py               modelos y sesión de SQLAlchemy
+│   ├── core/
+│   │   └── ingest.py       guardar mensajes y actualizar conversaciones
+│   ├── channels/
+│   │   ├── evolution.py    cliente HTTP y lectura de payloads
+│   │   ├── webhook.py      rutas del webhook
+│   │   └── telegram.py     avisos y botones
 │   ├── llm.py
-│   ├── handlers.py
 │   ├── reminders.py
-│   └── main.py
-├── samples/
-│   └── chat_ejemplo.txt
+│   └── web/                rutas y plantillas
 └── tests/
-    ├── test_parser.py
-    └── test_db.py
 ```
+
+## 8. Variables de entorno
+
+Obligatorias en Railway: `DATABASE_URL` (Neon, base `app`), `EVOLUTION_DATABASE_URL` (Neon, base `evolution`), `EVOLUTION_API_KEY`, `WEBHOOK_TOKEN`, `PUBLIC_URL`, `SESSION_SECRET`, `TZ`.
+
+Para las fases siguientes: `TELEGRAM_BOT_TOKEN`, `GEMINI_API_KEY`, `GEMINI_MODEL`, `SILENCE_MINUTES`, `REMINDER_INTERVAL_MIN`, `REMINDER_COOLDOWN_MIN`.
+
+`start.sh` deriva el resto: `DATABASE_CONNECTION_URI` y `AUTHENTICATION_API_KEY` de Evolution, `EVOLUTION_URL` y `WEBHOOK_BASE_URL` (ambos hacia `127.0.0.1`).

@@ -1,0 +1,18 @@
+{% if error %}
+<p class="error" role="alert">No pudimos generar el código ahora.</p>
+{% else %}
+  {% if code %}
+  <div>
+    <div class="muted">Tu código de emparejamiento</div>
+    <div class="code" aria-label="Código de emparejamiento">{{ code }}</div>
+  </div>
+  {% endif %}
+  {% if qr %}
+  <div style="margin-top:12px">
+    <img src="{{ qr }}" alt="Código QR para vincular WhatsApp" width="240" height="240">
+    <div class="hint">El código se renueva solo cada pocos segundos.</div>
+  </div>
+  {% endif %}
+  {% if not code and not qr %}<p class="muted">Todavía no hay código. Pulsa «Generar uno nuevo».</p>{% endif %}
+{% endif %}
+<p style="margin:16px 0 0"><button type="button" class="btn secondary" onclick="retryQr()">Generar uno nuevo</button></p>

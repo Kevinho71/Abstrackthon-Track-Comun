@@ -12,7 +12,10 @@ from app import config
 log = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = """Eres un asistente para agentes de atención al cliente y ventas.
-Recibes la transcripción de UN chat entre un agente y un cliente. Devuelve un análisis breve y fiel.
+Recibes la transcripción de UN chat entre el negocio y un cliente. Cada línea empieza con la hora y con
+«Cliente» o «Negocio». Las marcas [audio], [imagen], [documento] indican archivos que no puedes ver: no
+supongas su contenido. La conversación puede estar recortada y empezar a mitad de una charla.
+Devuelve un análisis breve y fiel.
 
 Reglas:
 - No inventes datos: si algo no aparece en el chat, déjalo en null.
@@ -51,16 +54,26 @@ def _get_client() -> genai.Client:
     return _client
 
 
-async def analyze(transcript: str, now_local: datetime, retries: int = 3) -> ChatAnalysis:
+def _attempt_plan(attempts_per_model: int) -> list[str]:
+    """Modelo principal primero y, si falla, el de respaldo (cuando es distinto)."""
+    plan = [config.GEMINI_MODEL] * attempts_per_model
+    if config.GEMINI_FALLBACK_MODEL and config.GEMINI_FALLBACK_MODEL != config.GEMINI_MODEL:
+        plan += [config.GEMINI_FALLBACK_MODEL] * attempts_per_model
+    return plan
+
+
+async def analyze(transcript: str, now_local: datetime, attempts_per_model: int = 2,
+                  backoff_seconds: float = 1.0) -> ChatAnalysis:
     prompt = (
         f"Fecha y hora actual: {now_local.strftime('%Y-%m-%d %H:%M')} ({config.TZ_NAME}).\n\n"
         f"Transcripción:\n{transcript}"
     )
+    plan = _attempt_plan(attempts_per_model)
     last_exc: Exception | None = None
-    for attempt in range(retries):
+    for i, model in enumerate(plan):
         try:
             resp = await _get_client().aio.models.generate_content(
-                model=config.GEMINI_MODEL,
+                model=model,
                 contents=prompt,
                 config=types.GenerateContentConfig(
                     system_instruction=SYSTEM_PROMPT,
@@ -70,8 +83,9 @@ async def analyze(transcript: str, now_local: datetime, retries: int = 3) -> Cha
                 ),
             )
             return ChatAnalysis.model_validate_json(resp.text)
-        except Exception as exc:  # límites de tasa, red, JSON inválido
+        except Exception as exc:  # sobrecarga (503), límites de tasa (429), red o JSON inválido
             last_exc = exc
-            log.warning("Gemini falló (intento %d/%d): %s", attempt + 1, retries, exc)
-            await asyncio.sleep(2 ** (attempt + 1))
+            log.warning("Gemini (%s) falló, intento %d/%d: %s", model, i + 1, len(plan), str(exc)[:200])
+            if i < len(plan) - 1:
+                await asyncio.sleep(backoff_seconds * 2 ** min(i, 3))
     raise RuntimeError(f"No se pudo analizar el chat: {last_exc}")
