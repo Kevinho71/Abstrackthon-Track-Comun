@@ -301,7 +301,8 @@ def test_tablero_agrupa_y_cuenta(client):
         from app.db import Account
         b = boards.build_board(s, s.scalar(select(Account.id)))
     assert {c.key: c.total for c in b.columns} == {
-        "sin_clasificar": 1, "pendiente_seguimiento": 1, "cita_agendada": 0, "vendida": 1, "resuelta": 1, "perdida": 0}
+        "sin_clasificar": 1, "pendiente_seguimiento": 1, "cita_agendada": 0, "vendida": 1, "resuelta": 1, "perdida": 0,
+        "personal": 0}
     assert b.sales_total == 160.0 and b.waiting == 1 and b.overdue == 1
 
 
@@ -421,3 +422,96 @@ def test_analizar_todo_sin_clave_responde_503(client, monkeypatch):
     signup(client)
     assert client.post("/board/analyze").status_code == 503
     assert "Analizar ahora" in client.get("/").text
+
+
+# --------------------------------------------------------------------------- chats personales
+def instance_of(client, conn_id):
+    with session_scope(client.app.state.session_factory) as s:
+        return s.get(Connection, conn_id).instance_name
+
+
+def hook(client, instance, jid, msg_id="P1", text="hola", from_me=False):
+    return client.post("/webhook/evolution", headers={"x-webhook-token": config.WEBHOOK_TOKEN}, json={
+        "event": "messages.upsert", "instance": instance,
+        "data": {"key": {"remoteJid": jid, "fromMe": from_me, "id": msg_id}, "message": {"conversation": text},
+                 "messageTimestamp": 1717689097}}).json()
+
+
+def count(client, model):
+    with session_scope(client.app.state.session_factory) as s:
+        return s.scalar(select(func.count()).select_from(model))
+
+
+def test_marcar_personal_borra_los_mensajes_y_descarta_los_siguientes(client):
+    signup(client)
+    cid = connect(client)
+    jid = "59170000009@s.whatsapp.net"
+    conv_id = add_chat(client, cid, jid, "Mamá", unanswered=True, summary="algo", suggested_status="resuelta")
+    assert count(client, Message) == 1
+    r = client.post(f"/conversations/{conv_id}/status", data={"status": "personal"})
+    assert r.json() == {"ok": True, "column": "personal"}
+    assert count(client, Message) == 0
+    with session_scope(client.app.state.session_factory) as s:
+        conv = s.get(Conversation, conv_id)
+        assert conv.ignored is True and conv.status == "personal" and conv.summary is None and conv.unanswered is False
+    assert hook(client, instance_of(client, cid), jid) == {"ok": True, "saved": 0}
+    assert count(client, Message) == 0
+    page = client.get("/").text
+    assert "No se guarda" in page and "Mamá" in page and "Volver a incluir" in page
+
+
+def test_un_chat_personal_no_se_mueve_a_otro_estado(client):
+    signup(client)
+    cid = connect(client)
+    conv_id = add_chat(client, cid)
+    client.post(f"/conversations/{conv_id}/status", data={"status": "personal"})
+    r = client.post(f"/conversations/{conv_id}/status", data={"status": "vendida"})
+    assert r.status_code == 400 and "Volver a incluir" in r.json()["error"]
+
+
+def test_volver_a_incluir_permite_guardar_de_nuevo(client):
+    signup(client)
+    cid = connect(client)
+    jid = "59170000009@s.whatsapp.net"
+    conv_id = add_chat(client, cid, jid, "Marta")
+    client.post(f"/conversations/{conv_id}/status", data={"status": "personal"})
+    assert client.post(f"/conversations/{conv_id}/include").json() == {"ok": True}
+    assert count(client, Conversation) == 0
+    assert hook(client, instance_of(client, cid), jid, msg_id="N1", text="hola otra vez") == {"ok": True, "saved": 1}
+    assert count(client, Message) == 1
+
+
+def test_ignorar_un_numero_antes_de_que_escriba(client):
+    signup(client)
+    cid = connect(client)
+    r = client.post("/ignored", data={"phone": "+591 7000 0777"})
+    assert r.json() == {"ok": True, "number": "59170000777"}
+    assert hook(client, instance_of(client, cid), "59170000777@s.whatsapp.net") == {"ok": True, "saved": 0}
+    assert count(client, Message) == 0
+    assert "59170000777" in client.get("/").text
+    assert client.post("/ignored", data={"phone": "12"}).status_code == 400
+
+
+def test_ignorar_un_numero_exige_tener_un_numero_conectado(client):
+    signup(client)
+    r = client.post("/ignored", data={"phone": "59170000777"})
+    assert r.status_code == 400 and "conecta" in r.json()["error"].lower()
+
+
+def test_la_tarjeta_tiene_el_menu_mover_y_el_detalle_ofrece_personal(client):
+    signup(client)
+    cid = connect(client)
+    conv_id = add_chat(client, cid, suggested_status="vendida")
+    assert "data-move" in client.get("/").text
+    drawer = client.get(f"/conversations/{conv_id}/drawer").text
+    assert 'data-set="personal"' in drawer and "Mover a" in drawer
+
+
+def test_una_cuenta_no_puede_incluir_chats_de_otra(make_client):
+    a = make_client()
+    signup(a, email="a@ejemplo.com")
+    conv_id = add_chat(a, connect(a))
+    b = make_client()
+    signup(b, email="b@ejemplo.com")
+    assert b.post(f"/conversations/{conv_id}/include").status_code == 404
+    assert count(a, Conversation) == 1

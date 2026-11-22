@@ -49,6 +49,7 @@ def pending_ids(session: Session, silence_cutoff: datetime, limit: int = BATCH_S
         session.scalars(
             query
             .where(
+                Conversation.ignored.is_(False),
                 Conversation.last_message_at.is_not(None),
                 Conversation.last_message_at <= silence_cutoff,
                 or_(
@@ -64,7 +65,7 @@ def pending_ids(session: Session, silence_cutoff: datetime, limit: int = BATCH_S
 
 def load_job(session: Session, conversation_id: int) -> Optional[Job]:
     conv = session.get(Conversation, conversation_id)
-    if conv is None:
+    if conv is None or conv.ignored:
         return None
     started = now_utc()  # los mensajes que lleguen después de este instante volverán a poner la conversación en cola
     messages = list(

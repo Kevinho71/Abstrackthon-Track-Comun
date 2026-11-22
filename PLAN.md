@@ -80,7 +80,7 @@ Web ► POST /api/connections {nombre, número}
 
 - `accounts(id, email, password_hash, name, telegram_id, link_token, tz, created_at)`.
 - `connections(id, account_id, instance_name UNIQUE, phone, state, created_at, connected_at)`. `state`: `creating`, `qr`, `connecting`, `open`, `closed`.
-- `conversations(id, connection_id, remote_jid, customer_name, summary, suggested_status, status, next_action, amount, follow_up_at, unanswered, done, last_message_at, last_analyzed_at, last_reminded_at)`. Única por `(connection_id, remote_jid)`.
+- `conversations(id, connection_id, remote_jid, customer_name, summary, suggested_status, status, next_action, amount, follow_up_at, unanswered, done, ignored, last_message_at, last_analyzed_at, last_reminded_at)`. Única por `(connection_id, remote_jid)`.
 - `messages(id, conversation_id, wa_message_id, direction, text, type, sent_at)`. Única por `(conversation_id, wa_message_id)`.
 - `corrections(id, conversation_id, suggested_status, final_status, at)`.
 
@@ -145,6 +145,10 @@ Las fechas se guardan en UTC.
 - [x] «Ir al chat» en cada tarjeta y en el detalle: abre la conversación en WhatsApp con `https://wa.me/<número>` en una pestaña nueva. Los contactos sin número visible (`@lid`) no tienen enlace.
 - [x] Diseño con el estilo «hoja enmarcada» del skill de diseño: marco verde-grisáceo, hoja blanca, sin modo oscuro. Inspector: 0 fallos y 0 avisos a 1440, 768 y 390.
 - [x] Datos de demostración solo para desarrollo local: `python scripts/seed_demo.py` (cuenta `demo@demo.local`).
+- [x] Chats personales: columna booleana `ignored` y estado «Personal». Al marcar un chat como personal se borran sus mensajes guardados y no se guarda ni se analiza nada más de ese contacto (se descarta en el webhook). «Volver a incluir» borra la marca y el próximo mensaje lo crea como chat nuevo. También se puede ignorar un número antes de que escriba. Pide confirmación porque borra mensajes.
+- [x] Mover a mano: cada tarjeta tiene un botón «Mover» con una lista desplegable (Pendiente, Cita agendada, Vendida, Resuelta, Perdida y Personal). Se puede usar con teclado y desde el detalle. Se mantiene el arrastre entre columnas.
+- [x] Clasificación refinada: orden de prioridad (perdida, vendida, cita, pendiente, resuelta). Una venta con entrega, recojo, instalación o primera clase con fecha sigue siendo «vendida», y esa fecha se muestra como «Entrega». Un presupuesto sin pago ni aceptación es «pendiente». Los 6 casos difíciles nuevos de `samples/eval_chats.json` salen 6/6.
+- [x] Las bases existentes reciben la columna `ignored` al arrancar (`init_db` añade las columnas que faltan).
 - [ ] Probar el tablero con conversaciones reales (tras desplegar y recibir mensajes).
 - [ ] La lista «Hoy» queda cubierta por la línea de urgencias y las marcas de las tarjetas; una vista aparte se decide tras el piloto.
 
