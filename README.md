@@ -3,24 +3,29 @@
 Servicio que recibe los chats de WhatsApp por Evolution API, los guarda, los clasifica con Gemini y recuerda los pendientes.
 El plan por fases está en [PLAN.md](PLAN.md) y las alternativas evaluadas en [ALTERNATIVAS.md](ALTERNATIVAS.md).
 
-## Ejecutar en local
+## Ejecutar las pruebas
 
 ```powershell
 python -m venv .venv
 .venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-copy .env.example .env      # completa EVOLUTION_API_KEY y WEBHOOK_TOKEN
-python -m pytest            # pruebas
-python -m app.main          # inicia el backend en http://localhost:8000
+python -m pytest
 ```
 
-`GET /health` responde `{"ok": true}`. Evolution envía sus eventos a
-`POST /webhook/evolution?token=<WEBHOOK_TOKEN>`.
+## Ejecutar todo en local con Docker (Evolution + backend, igual que en Railway)
 
-## Desplegar en Railway
+```powershell
+copy .env.example .env      # completa las variables
+docker build -t chatfollowup .
+docker run --rm -p 8000:8000 --env-file .env -e PORT=8000 -e EVOLUTION_URL= -e WEBHOOK_BASE_URL= chatfollowup
+```
 
-1. Proyecto con Postgres y dos bases: `app` y `evolution`.
-2. Servicio `evolution` con una versión fija de la imagen oficial y **sin dominio público**.
-3. Servicio `app` desde este repositorio, con dominio público. El comando de inicio está en `railway.toml`.
-4. Variables del servicio `app`: `DATABASE_URL`, `EVOLUTION_URL` (red privada), `EVOLUTION_API_KEY`, `WEBHOOK_TOKEN`, `PUBLIC_URL`, `WEBHOOK_BASE_URL`, `TZ`.
-5. Una sola instancia de cada servicio.
+`GET http://localhost:8000/health` responde `{"ok": true}`. La primera vez, Evolution tarda
+unos minutos en aplicar sus migraciones en la base `evolution`.
+
+## Desplegar en Railway (un solo servicio)
+
+1. Crea un servicio desde este repositorio. `railway.toml` indica que se construye con el `Dockerfile`.
+2. Variables: `DATABASE_URL`, `EVOLUTION_DATABASE_URL`, `EVOLUTION_API_KEY`, `WEBHOOK_TOKEN`, `SESSION_SECRET`, `TZ`.
+3. Genera el dominio público del servicio y guárdalo en `PUBLIC_URL`.
+4. No añadas más servicios ni réplicas: Evolution y el backend corren juntos en el mismo contenedor.

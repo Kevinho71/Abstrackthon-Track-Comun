@@ -44,32 +44,27 @@ class EvolutionClient:
             raise EvolutionError(f"Evolution respondió {resp.status_code}: {resp.text[:300]}")
         return resp.json() if resp.content else {}
 
-    async def create_instance(self, name: str, webhook_url: str, number: Optional[str] = None) -> dict:
+    @staticmethod
+    def _webhook_config(url: str, token: Optional[str]) -> dict:
+        cfg: dict[str, Any] = {"url": url, "byEvents": False, "base64": False, "events": WEBHOOK_EVENTS}
+        if token:  # el token viaja en una cabecera para que no quede en los logs de acceso
+            cfg["headers"] = {"x-webhook-token": token, "Content-Type": "application/json"}
+        return cfg
+
+    async def create_instance(self, name: str, webhook_url: str, number: Optional[str] = None,
+                              token: Optional[str] = None) -> dict:
         body: dict[str, Any] = {
             "instanceName": name,
             "integration": "WHATSAPP-BAILEYS",
             "qrcode": True,
-            "webhook": {
-                "url": webhook_url,
-                "byEvents": False,
-                "base64": False,
-                "events": WEBHOOK_EVENTS,
-            },
+            "webhook": self._webhook_config(webhook_url, token),
         }
         if number:
-            body["number"] = number
+            body["number"] = number  # con el número, Evolution también genera el código de emparejamiento
         return await self._request("POST", "/instance/create", json=body)
 
-    async def set_webhook(self, name: str, webhook_url: str) -> dict:
-        body = {
-            "webhook": {
-                "enabled": True,
-                "url": webhook_url,
-                "byEvents": False,
-                "base64": False,
-                "events": WEBHOOK_EVENTS,
-            }
-        }
+    async def set_webhook(self, name: str, webhook_url: str, token: Optional[str] = None) -> dict:
+        body = {"webhook": {"enabled": True, **self._webhook_config(webhook_url, token)}}
         return await self._request("POST", f"/webhook/set/{name}", json=body)
 
     async def connect(self, name: str, number: Optional[str] = None) -> dict:

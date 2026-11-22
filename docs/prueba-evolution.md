@@ -1,6 +1,6 @@
 # Prueba técnica de Evolution API (Fase 0)
 
-Rellenar durante la prueba. Versión de la imagen probada: `______`.
+Rellenar durante la prueba. Versión de la imagen probada: `evoapicloud/evolution-api:v2.3.7`.
 
 ## Criterios
 
@@ -15,13 +15,21 @@ Rellenar durante la prueba. Versión de la imagen probada: `______`.
 | Sin mensajes duplicados en `messages` | |
 | Evolution funciona sin Redis | |
 
-## Por verificar contra la versión desplegada
+## Verificado en local contra Neon (v2.3.7)
 
-- [ ] `POST /instance/create` acepta el campo `webhook` (si no, usar `POST /webhook/set/{instance}`, ya implementado en `EvolutionClient.set_webhook`).
-- [ ] Nombre del evento en el payload: `messages.upsert` o `MESSAGES_UPSERT` (el backend acepta ambos).
-- [ ] Respuesta de `GET /instance/connect/{instance}` con y sin `?number=`: campos `base64`, `code`, `pairingCode`.
-- [ ] Respuesta de `GET /instance/connectionState/{instance}`.
+- [x] `POST /instance/create` acepta el campo `webhook` con `url`, `events` y `headers`. Responde con `instance`, `webhook`, `settings` y `qrcode`.
+- [x] Con `number` en la creación, `qrcode.pairingCode` trae un código de 8 caracteres. Con `GET /instance/connect/{instance}?number=` sobre una instancia ya creada sin número, `pairingCode` llega `null`. Por eso el número se envía al crear la instancia.
+- [x] `GET /instance/connect/{instance}` devuelve `pairingCode`, `code`, `base64` y `count`.
+- [x] `GET /instance/connectionState/{instance}` devuelve `instance.state` (`connecting` mientras espera el escaneo).
+- [x] Los webhooks (`connection.update`, `qrcode.updated`) llegan al backend con la cabecera `x-webhook-token` y actualizan el estado en la base.
+- [x] Sin la clave global, Evolution responde 401.
+- [x] Evolution arranca y aplica sus migraciones sin Redis.
+
+## Por verificar con números reales
+
+- [ ] Nombre del evento en el payload de `messages.upsert` (`messages.upsert` o `MESSAGES_UPSERT`; el backend acepta ambos) y su estructura exacta.
 - [ ] Qué trae `syncFullHistory` y cuántos meses de historial llegan al vincular.
+- [ ] Que los mensajes enviados desde el teléfono llegan con `fromMe: true`.
 - [ ] Licencia de Evolution y si permite el uso comercial.
 
 ## Payloads reales

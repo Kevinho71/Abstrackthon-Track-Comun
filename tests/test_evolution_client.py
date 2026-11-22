@@ -20,10 +20,11 @@ async def test_create_instance_envia_clave_y_webhook():
         seen["body"] = json.loads(request.content)
         return httpx.Response(201, json={"instance": {"instanceName": "x"}})
 
-    await make(handler).create_instance("x", "http://app/webhook/evolution?token=t", number="59170000001")
+    await make(handler).create_instance("x", "http://app/webhook/evolution", number="59170000001", token="t")
     assert seen["apikey"] == "clave" and seen["path"] == "/instance/create"
     assert seen["body"]["instanceName"] == "x" and seen["body"]["number"] == "59170000001"
-    assert seen["body"]["webhook"]["url"].endswith("token=t")
+    assert seen["body"]["webhook"]["url"] == "http://app/webhook/evolution"
+    assert seen["body"]["webhook"]["headers"]["x-webhook-token"] == "t"
     assert "MESSAGES_UPSERT" in seen["body"]["webhook"]["events"]
 
 

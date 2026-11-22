@@ -21,38 +21,42 @@ El sistema solo **escucha**. No envía mensajes por WhatsApp desde las sesiones 
 
 | Tema | Decisión |
 |---|---|
-| Conexión con WhatsApp | Evolution API autoalojada en Railway. Una instancia por número conectado. |
-| Registro del número | QR y código de emparejamiento, ambos disponibles, con botón «reintentar» que no crea otra instancia. |
-| Entrada de mensajes | Webhook `messages.upsert` de Evolution hacia el backend, por la red privada de Railway. |
+| Conexión con WhatsApp | Evolution API v2.3.7 (versión fija), en el mismo contenedor que el backend. Una instancia por número conectado. |
+| Registro del número | QR y código de emparejamiento. El número se envía al crear la instancia; sin él no hay código. Botón «reintentar» que no crea otra instancia. |
+| Entrada de mensajes | Webhook `messages.upsert` de Evolution hacia el backend, por `127.0.0.1` dentro del contenedor. El token viaja en la cabecera `x-webhook-token`. |
 | Envío de mensajes | Ninguno por WhatsApp. Los avisos al agente van por Telegram. |
 | Backend | Python 3.12, FastAPI, SQLAlchemy 2, `httpx`, `python-telegram-bot`, `google-genai`. |
-| Base de datos | Postgres en Railway, con dos bases: `app` y `evolution`. Las pruebas usan SQLite. |
+| Base de datos | Neon (Postgres), proyecto `chat-followup` con dos bases: `app` (datos del producto) y `evolution` (sesiones de WhatsApp). Las pruebas usan SQLite. |
 | Panel | Web servida por FastAPI (Jinja2 + HTMX). |
 | LLM | `gemini-3.5-flash-lite` con salida JSON validada con Pydantic. |
 | Quién decide el estado | La IA sugiere (`suggested_status`) y la persona confirma (`status`). |
-| Despliegue | Todo en un proyecto de Railway: `app` (público), `evolution` (privado) y `postgres`. |
+| Despliegue | **Un solo servicio en Railway**, construido desde el `Dockerfile`. `start.sh` arranca Evolution y el backend en el mismo contenedor. |
 | Segunda etapa | Adaptador para la Cloud API oficial de Meta con coexistencia (Tech Provider), como plan «oficial». |
 
-## 3. Arquitectura en Railway
+## 3. Arquitectura
 
 ```
- Navegador ──HTTPS──► app (FastAPI, dominio público)
-                        │  /api/connections        crea la instancia y pide el QR
-                        │  /webhook/evolution      recibe los eventos
-                        │  web + tareas + bot de Telegram
-                        │
-          red privada   │ http://evolution.railway.internal:8080
-                        ▼
-                   evolution (sin dominio público)
-                        │  sesión de WhatsApp por instancia (Baileys)
-                        ▼
-                   postgres ── base `evolution` (sesiones)
-                            └─ base `app` (cuentas, conexiones, conversaciones, mensajes)
+ Navegador ──HTTPS──► Railway: un solo servicio (Dockerfile)
+                      ┌───────────────────────────────────────────────┐
+                      │ backend FastAPI  (puerto $PORT, público)      │
+                      │   /api/connections   crea la instancia, QR    │
+                      │   /webhook/evolution recibe los eventos       │
+                      │   web + tareas + bot de Telegram              │
+                      │        ▲ 127.0.0.1:$PORT   │ 127.0.0.1:8081   │
+                      │        │                   ▼                  │
+                      │ Evolution API (solo dentro del contenedor)    │
+                      └────────┬──────────────────┬───────────────────┘
+                               ▼                  ▼
+                  Neon · base `app`      Neon · base `evolution`
+                  (cuentas, conversaciones,   (sesiones de WhatsApp)
+                   mensajes)
 ```
 
-- Evolution no tiene dominio público. Solo el backend le habla, con la clave global `AUTHENTICATION_API_KEY`.
-- Evolution envía los eventos al backend por la red privada, con un token propio en la URL del webhook.
-- Los servicios corren en una sola instancia cada uno.
+- Railway enruta el dominio público solo al puerto `$PORT` (el backend). Evolution escucha en `127.0.0.1:8081` y no es accesible desde fuera.
+- El backend habla con Evolution con la clave global `AUTHENTICATION_API_KEY`. Evolution envía los eventos al backend con el token en la cabecera `x-webhook-token`.
+- `start.sh` arranca los dos procesos. Si uno termina, el contenedor se detiene y Railway lo reinicia.
+- Evolution solo guarda las sesiones en su base. Los mensajes los guarda el backend en la base `app`.
+- Se ejecuta una sola instancia del servicio.
 
 ### Flujo de un mensaje
 
@@ -85,10 +89,9 @@ Las fechas se guardan en UTC.
 ## 4. Fases
 
 ### Fase 0. Infra en Railway y prueba técnica de Evolution (1–2 días, con la persona responsable)
-- [ ] Proyecto de Railway con Postgres. Crear las bases `app` y `evolution`.
-- [ ] Servicio `evolution` con una versión fija de la imagen oficial (no `latest`), sin dominio público. Variables: `SERVER_URL`, `AUTHENTICATION_API_KEY`, `DATABASE_PROVIDER=postgresql`, `DATABASE_CONNECTION_URI` (base `evolution`), guardado de instancias en base de datos y webhooks globales desactivados.
-- [ ] Probar sin Redis. Si hay desconexiones o QR que no aparecen, añadirlo.
-- [ ] Servicio `app` con dominio público y las variables de la sección 8.
+- [x] Proyecto de Neon `chat-followup` (región `aws-us-east-1`) con las bases `app` y `evolution`.
+- [x] `Dockerfile` y `start.sh`: Evolution v2.3.7 y el backend en un solo contenedor, sin Redis. Probado en local contra Neon: Evolution aplica sus migraciones, exige su clave, crea instancias, genera el QR y el código de emparejamiento, y sus webhooks llegan al backend.
+- [ ] Un solo servicio en Railway desde este repositorio, con dominio público y las variables de la sección 8. Si hay desconexiones o QR que no aparecen, añadir Redis.
 - [ ] **Prueba técnica** con 5 números distintos, usando el código de emparejamiento y el QR:
   - Se registran a la primera o a la segunda.
   - Las 5 sesiones siguen conectadas 24–48 horas.
@@ -105,8 +108,8 @@ Las fechas se guardan en UTC.
 - [x] Conversación creada o actualizada por `(connection_id, remote_jid)`, con `last_message_at` y `unanswered` (`app/core/ingest.py`).
 - [x] Manejo de `connection.update` y `qrcode.updated` para el estado de la conexión.
 - [x] Pruebas con payloads de ejemplo de Evolution (`tests/`).
-- [ ] Ejecutar las pruebas contra Postgres. Hasta ahora corren sobre SQLite.
-- [ ] Contrastar los payloads y los endpoints con la versión real de Evolution (lista en `docs/prueba-evolution.md`).
+- [x] Esquema creado y guardado idempotente verificados contra Postgres (Neon).
+- [x] Endpoints de Evolution verificados contra la versión 2.3.7. Quedan por contrastar los payloads reales de `messages.upsert` (lista en `docs/prueba-evolution.md`).
 
 **Listo cuando:** un payload `messages.upsert` repetido deja una sola fila en `messages` y la conversación queda actualizada.
 
@@ -163,7 +166,8 @@ Las fechas se guardan en UTC.
 | Concepto | Costo |
 |---|---|
 | Evolution API | Gratis. Se paga el servicio en Railway. Revisar su licencia antes de usarla comercialmente. |
-| Railway (app, evolution, postgres) | Plan Hobby desde 5 USD al mes más el uso. El consumo real se mide en la Fase 0. |
+| Railway (un servicio con Evolution y el backend) | Plan Hobby desde 5 USD al mes más el uso. El consumo real se mide en la Fase 0. |
+| Neon (Postgres) | Plan gratuito para empezar. Evolution y las tareas periódicas mantienen la base despierta, así que hay que vigilar las horas de cómputo incluidas y pasar a un plan de pago si se agotan. |
 | Gemini Flash-Lite | Unos 0,002 USD por análisis. Una cuenta con 100 conversaciones al día: unos 6 USD al mes. En producción se usa el nivel de pago, porque en el gratuito Google puede usar los datos. |
 | Telegram Bot API | Gratis. |
 | WhatsApp Cloud API oficial (Fase 7) | Recibir no se cobra. Se cobran los mensajes de plantilla enviados. Tarifas de terceros para «Resto de Latinoamérica» (incluye Bolivia): marketing 0,0740 USD, utilidad y servicio 0,0113 USD. Confirmar en Meta. |
@@ -181,7 +185,9 @@ Las fechas se guardan en UTC.
 | Datos personales de clientes | Consentimiento, acceso por cuenta, Gemini de pago y anonimización en las pruebas. |
 | Clasificación errónea | La IA solo sugiere. La persona confirma y se mide el acierto. |
 | Entregas duplicadas del webhook | Clave única por instancia e id del mensaje. |
-| Evolution expuesto a internet | Sin dominio público. Solo accesible por la red privada de Railway. |
+| Evolution expuesto a internet | Escucha solo en `127.0.0.1` dentro del contenedor. Railway solo enruta el puerto del backend. |
+| Evolution y el backend comparten contenedor | Si uno cae, el contenedor se reinicia con los dos. Un fallo de Evolution corta el webhook hasta que vuelve. |
+| La cuota de cómputo gratuita de Neon se agota | Medirla en el piloto. Alternativa: plan de pago de Neon. |
 
 ## 7. Estructura de carpetas
 
@@ -191,6 +197,8 @@ Track-Comun/
 ├── ALTERNATIVAS.md
 ├── README.md
 ├── requirements.txt
+├── Dockerfile          Evolution + backend en una sola imagen
+├── start.sh            arranca los dos procesos
 ├── railway.toml
 ├── .env.example
 ├── docs/
@@ -213,4 +221,8 @@ Track-Comun/
 
 ## 8. Variables de entorno
 
-`DATABASE_URL`, `EVOLUTION_URL`, `EVOLUTION_API_KEY`, `WEBHOOK_TOKEN`, `PUBLIC_URL`, `SESSION_SECRET`, `TELEGRAM_BOT_TOKEN`, `GEMINI_API_KEY`, `GEMINI_MODEL`, `TZ`, `SILENCE_MINUTES`, `REMINDER_INTERVAL_MIN`, `REMINDER_COOLDOWN_MIN`.
+Obligatorias en Railway: `DATABASE_URL` (Neon, base `app`), `EVOLUTION_DATABASE_URL` (Neon, base `evolution`), `EVOLUTION_API_KEY`, `WEBHOOK_TOKEN`, `PUBLIC_URL`, `SESSION_SECRET`, `TZ`.
+
+Para las fases siguientes: `TELEGRAM_BOT_TOKEN`, `GEMINI_API_KEY`, `GEMINI_MODEL`, `SILENCE_MINUTES`, `REMINDER_INTERVAL_MIN`, `REMINDER_COOLDOWN_MIN`.
+
+`start.sh` deriva el resto: `DATABASE_CONNECTION_URI` y `AUTHENTICATION_API_KEY` de Evolution, `EVOLUTION_URL` y `WEBHOOK_BASE_URL` (ambos hacia `127.0.0.1`).

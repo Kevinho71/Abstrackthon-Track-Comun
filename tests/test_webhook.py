@@ -55,6 +55,12 @@ def test_evento_repetido_deja_una_sola_fila(client):
     assert n_messages(client) == 1
 
 
+def test_token_en_cabecera(client):
+    assert client.post("/webhook/evolution", json=upsert(), headers={"x-webhook-token": "mal"}).status_code == 401
+    r = client.post("/webhook/evolution", json=upsert(), headers={"x-webhook-token": TOKEN})
+    assert r.json() == {"ok": True, "saved": 1}
+
+
 def test_instancia_desconocida_se_ignora_con_200(client):
     r = client.post(f"/webhook/evolution?token={TOKEN}", json=upsert(instance="nadie"))
     assert r.status_code == 200 and n_messages(client) == 0
